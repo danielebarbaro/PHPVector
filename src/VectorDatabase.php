@@ -167,6 +167,77 @@ final class VectorDatabase
         }
     }
 
+    /**
+     * Delete a document by its user-visible ID.
+     *
+     * The document is soft-deleted from HNSW (excluded from results but kept
+     * for graph connectivity) and fully removed from the BM25 index.
+     *
+     * When persistence is enabled, the document file is also deleted from disk.
+     * Call `save()` afterward to persist the updated index state.
+     *
+     * @param string|int $id The document ID to delete.
+     * @return bool True if the document was deleted, false if it didn't exist.
+     */
+    public function deleteDocument(string|int $id): bool
+    {
+        if (!isset($this->docIdToNodeId[$id])) {
+            return false;
+        }
+
+        $nodeId = $this->docIdToNodeId[$id];
+
+        // Soft-delete from HNSW (node stays for connectivity, excluded from results).
+        $this->hnswIndex->delete($nodeId);
+
+        // Fully remove from BM25.
+        $this->bm25Index->removeDocument($nodeId);
+
+        // Remove from local caches.
+        unset($this->nodeIdToDoc[$nodeId]);
+        unset($this->docIdToNodeId[$id]);
+
+        // Delete document file from disk if persistence is enabled.
+        if ($this->path !== null) {
+            $docFile = $this->path . '/docs/' . $nodeId . '.bin';
+            if (file_exists($docFile)) {
+                unlink($docFile);
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Update a document by replacing it entirely.
+     *
+     * This is equivalent to deleteDocument() followed by addDocument() with the
+     * same ID. The document gets a new internal nodeId, so this is effectively
+     * a delete + insert operation.
+     *
+     * @param Document $document The updated document. Must have the same ID as an existing document.
+     * @return bool True if the document was updated, false if it didn't exist.
+     * @throws \RuntimeException if the document has no ID.
+     */
+    public function updateDocument(Document $document): bool
+    {
+        if ($document->id === null) {
+            throw new \RuntimeException('Cannot update a document without an ID.');
+        }
+
+        if (!isset($this->docIdToNodeId[$document->id])) {
+            return false;
+        }
+
+        // Delete the old document.
+        $this->deleteDocument($document->id);
+
+        // Insert the new version.
+        $this->addDocument($document);
+
+        return true;
+    }
+
     // ------------------------------------------------------------------
     // Search
     // ------------------------------------------------------------------
@@ -307,6 +378,7 @@ final class VectorDatabase
             'docIdToNodeId' => $this->docIdToNodeId,
             'entryPoint'    => $hnswState['entryPoint'],
             'maxLayer'      => $hnswState['maxLayer'],
+            'deleted'       => $hnswState['deleted'],
         ];
         if (file_put_contents($this->path . '/meta.json', json_encode($meta, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)) === false) {
             throw new \RuntimeException("Failed to write meta.json in: {$this->path}");
@@ -376,6 +448,7 @@ final class VectorDatabase
         // HNSW needs these in $documents[] to return SearchResult objects.
         $hnswState              = $hnswData;
         $hnswState['documents'] = [];
+        $hnswState['deleted']   = $meta['deleted'] ?? [];
         foreach ($hnswData['nodes'] as $nodeId => $nodeData) {
             $docId = $nodeIdToDocId[$nodeId] ?? $nodeId;
             $hnswState['documents'][$nodeId] = [
@@ -407,10 +480,10 @@ final class VectorDatabase
     // Utilities
     // ------------------------------------------------------------------
 
-    /** Total number of documents stored. */
+    /** Total number of active (non-deleted) documents stored. */
     public function count(): int
     {
-        return $this->nextId;
+        return $this->hnswIndex->count();
     }
 
     // ------------------------------------------------------------------

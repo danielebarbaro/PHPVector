@@ -387,4 +387,73 @@ final class PersistenceTest extends TestCase
         $ids     = array_map(fn($r) => $r->document->id, $results);
         self::assertContains(1, $ids);
     }
+
+    // ------------------------------------------------------------------
+    // Delete persistence
+    // ------------------------------------------------------------------
+
+    public function testDeletedDocumentsArePersistedAndExcluded(): void
+    {
+        $db = $this->makeDb();
+        $db->addDocument(new Document(id: 1, vector: [1.0, 0.0], text: 'first'));
+        $db->addDocument(new Document(id: 2, vector: [0.9, 0.1], text: 'second'));
+        $db->addDocument(new Document(id: 3, vector: [0.0, 1.0], text: 'third'));
+
+        // Delete document 1
+        $db->deleteDocument(1);
+        $db->save();
+
+        // Reload and verify
+        $loaded = $this->openDb();
+        self::assertSame(2, $loaded->count());
+
+        // Document 1 should not appear in results
+        $results = $loaded->vectorSearch([1.0, 0.0], k: 3);
+        $ids     = array_map(fn($r) => $r->document->id, $results);
+        self::assertNotContains(1, $ids);
+        self::assertContains(2, $ids);
+    }
+
+    public function testDeletedDocumentFileIsRemoved(): void
+    {
+        $db = $this->makeDb();
+        $db->addDocument(new Document(id: 1, vector: [1.0, 0.0], text: 'to delete'));
+        $db->addDocument(new Document(id: 2, vector: [0.0, 1.0], text: 'to keep'));
+        $db->save();
+
+        // Verify doc file exists
+        self::assertFileExists($this->tmpDir . '/docs/0.bin');
+        self::assertFileExists($this->tmpDir . '/docs/1.bin');
+
+        // Delete document 1 (which is nodeId 0)
+        $db->deleteDocument(1);
+
+        // Doc file should be removed immediately
+        self::assertFileDoesNotExist($this->tmpDir . '/docs/0.bin');
+        self::assertFileExists($this->tmpDir . '/docs/1.bin');
+    }
+
+    public function testUpdateDocumentPersistsCorrectly(): void
+    {
+        $db = $this->makeDb();
+        $db->addDocument(new Document(id: 1, vector: [1.0, 0.0], text: 'original'));
+        $db->save();
+
+        // Update the document
+        $db->updateDocument(new Document(
+            id: 1,
+            vector: [0.0, 1.0],
+            text: 'updated content',
+            metadata: ['version' => 2],
+        ));
+        $db->save();
+
+        // Reload and verify
+        $loaded  = $this->openDb();
+        $results = $loaded->vectorSearch([0.0, 1.0], k: 1);
+
+        self::assertSame(1, $results[0]->document->id);
+        self::assertSame('updated content', $results[0]->document->text);
+        self::assertSame(['version' => 2], $results[0]->document->metadata);
+    }
 }

@@ -236,4 +236,130 @@ final class VectorDatabaseTest extends TestCase
 
         self::assertSame(['color' => 'red', 'year' => 2024], $results[0]->document->metadata);
     }
+
+    // ------------------------------------------------------------------
+    // Delete document
+    // ------------------------------------------------------------------
+
+    public function testDeleteDocumentReducesCount(): void
+    {
+        $db = $this->makeDb();
+        $db->addDocument(new Document(id: 1, vector: [1.0, 0.0], text: 'first'));
+        $db->addDocument(new Document(id: 2, vector: [0.0, 1.0], text: 'second'));
+
+        self::assertSame(2, $db->count());
+
+        $result = $db->deleteDocument(1);
+        self::assertTrue($result);
+        self::assertSame(1, $db->count());
+    }
+
+    public function testDeleteDocumentExcludesFromVectorSearch(): void
+    {
+        $db = $this->makeDb();
+        $db->addDocument(new Document(id: 1, vector: [1.0, 0.0], text: 'first'));
+        $db->addDocument(new Document(id: 2, vector: [0.99, 0.01], text: 'second'));
+        $db->addDocument(new Document(id: 3, vector: [0.0, 1.0], text: 'third'));
+
+        // Before delete, doc 1 should be closest to [1.0, 0.0]
+        $results = $db->vectorSearch([1.0, 0.0], 1);
+        self::assertSame(1, $results[0]->document->id);
+
+        // Delete doc 1
+        $db->deleteDocument(1);
+
+        // Now doc 2 should be closest
+        $results = $db->vectorSearch([1.0, 0.0], 1);
+        self::assertSame(2, $results[0]->document->id);
+    }
+
+    public function testDeleteDocumentExcludesFromTextSearch(): void
+    {
+        $db = $this->makeDb();
+        $db->addDocument(new Document(id: 1, vector: [1.0, 0.0], text: 'unique keyword here'));
+        $db->addDocument(new Document(id: 2, vector: [0.0, 1.0], text: 'something else'));
+
+        // Before delete
+        $results = $db->textSearch('unique keyword', 5);
+        self::assertCount(1, $results);
+        self::assertSame(1, $results[0]->document->id);
+
+        // Delete doc 1
+        $db->deleteDocument(1);
+
+        // After delete: no results for that keyword
+        $results = $db->textSearch('unique keyword', 5);
+        self::assertCount(0, $results);
+    }
+
+    public function testDeleteNonexistentDocumentReturnsFalse(): void
+    {
+        $db = $this->makeDb();
+        $db->addDocument(new Document(id: 1, vector: [1.0, 0.0], text: 'hello'));
+
+        self::assertFalse($db->deleteDocument(999));
+        self::assertFalse($db->deleteDocument('nonexistent'));
+    }
+
+    public function testDeleteAllowsReinsertWithSameId(): void
+    {
+        $db = $this->makeDb();
+        $db->addDocument(new Document(id: 'doc', vector: [1.0, 0.0], text: 'original'));
+
+        $db->deleteDocument('doc');
+
+        // Should not throw - ID is now available
+        $db->addDocument(new Document(id: 'doc', vector: [0.0, 1.0], text: 'replacement'));
+
+        $results = $db->textSearch('replacement', 1);
+        self::assertCount(1, $results);
+        self::assertSame('doc', $results[0]->document->id);
+    }
+
+    // ------------------------------------------------------------------
+    // Update document
+    // ------------------------------------------------------------------
+
+    public function testUpdateDocumentChangesContent(): void
+    {
+        $db = $this->makeDb();
+        $db->addDocument(new Document(id: 1, vector: [1.0, 0.0], text: 'original content'));
+
+        $result = $db->updateDocument(new Document(
+            id: 1,
+            vector: [0.0, 1.0],
+            text: 'updated content',
+            metadata: ['version' => 2],
+        ));
+
+        self::assertTrue($result);
+        self::assertSame(1, $db->count());
+
+        // Text search should find updated content
+        $results = $db->textSearch('updated content', 1);
+        self::assertCount(1, $results);
+        self::assertSame(1, $results[0]->document->id);
+        self::assertSame(['version' => 2], $results[0]->document->metadata);
+
+        // Vector search should use new vector
+        $results = $db->vectorSearch([0.0, 1.0], 1);
+        self::assertSame(1, $results[0]->document->id);
+    }
+
+    public function testUpdateNonexistentDocumentReturnsFalse(): void
+    {
+        $db = $this->makeDb();
+
+        $result = $db->updateDocument(new Document(id: 999, vector: [1.0, 0.0], text: 'new'));
+        self::assertFalse($result);
+    }
+
+    public function testUpdateDocumentWithoutIdThrows(): void
+    {
+        $db = $this->makeDb();
+        $db->addDocument(new Document(id: 1, vector: [1.0, 0.0], text: 'hello'));
+
+        $this->expectException(\RuntimeException::class);
+        $db->updateDocument(new Document(vector: [0.0, 1.0], text: 'no id'));
+    }
 }

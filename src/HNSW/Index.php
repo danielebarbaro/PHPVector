@@ -119,6 +119,14 @@ final class Index
     private ?int $dimension = null;
 
     /**
+     * Set of soft-deleted node IDs.
+     * Deleted nodes remain in the graph for connectivity but are excluded from results.
+     *
+     * @var array<int, true>
+     */
+    private array $deleted = [];
+
+    /**
      * Resolved distance closure — built once in the constructor so the
      * per-call match() dispatch is removed from the hot path.
      *
@@ -356,15 +364,51 @@ final class Index
         // Full beam search at layer 0.
         $W = $this->searchLayer($qv, [[$epDist, $ep]], $ef, 0);
 
-        // Take the k nearest and convert to SearchResult.
+        // Filter out soft-deleted nodes and take the k nearest.
+        if (!empty($this->deleted)) {
+            $W = array_values(array_filter(
+                $W,
+                fn(array $pair) => !isset($this->deleted[$pair[1]])
+            ));
+        }
+
         $topK = array_slice($W, 0, $k);
         return $this->toSearchResults($topK);
     }
 
-    /** Total number of documents in the index. */
+    /**
+     * Total number of active (non-deleted) documents in the index.
+     */
     public function count(): int
     {
-        return count($this->nodes);
+        return count($this->nodes) - count($this->deleted);
+    }
+
+    /**
+     * Soft-delete a node by its internal ID.
+     *
+     * The node remains in the graph (for connectivity) but is excluded from
+     * search results. This is the standard approach for HNSW deletion as
+     * physically removing nodes would require expensive graph repairs.
+     *
+     * @return bool True if the node was deleted, false if it didn't exist or was already deleted.
+     */
+    public function delete(int $nodeId): bool
+    {
+        if (!isset($this->nodes[$nodeId]) || isset($this->deleted[$nodeId])) {
+            return false;
+        }
+
+        $this->deleted[$nodeId] = true;
+        return true;
+    }
+
+    /**
+     * Check if a node has been soft-deleted.
+     */
+    public function isDeleted(int $nodeId): bool
+    {
+        return isset($this->deleted[$nodeId]);
     }
 
     /**
@@ -396,7 +440,8 @@ final class Index
      *   maxLayer: int,
      *   dimension: int|null,
      *   nodes: array<int, array{maxLayer: int, vector: float[], connections: array<int, int[]>}>,
-     *   documents: array<int, array{id: string|int, text: string|null, metadata: array}>
+     *   documents: array<int, array{id: string|int, text: string|null, metadata: array}>,
+     *   deleted: int[]
      * }
      */
     public function exportState(): array
@@ -425,6 +470,7 @@ final class Index
             'dimension'  => $this->dimension,
             'nodes'      => $nodes,
             'documents'  => $documents,
+            'deleted'    => array_keys($this->deleted),
         ];
     }
 
@@ -437,7 +483,8 @@ final class Index
      *   maxLayer: int,
      *   dimension: int|null,
      *   nodes: array<int, array{maxLayer: int, vector: float[], connections: array<int, int[]>}>,
-     *   documents: array<int, array{id: string|int, text: string|null, metadata: array}>
+     *   documents: array<int, array{id: string|int, text: string|null, metadata: array}>,
+     *   deleted?: int[]
      * } $state
      */
     public function importState(array $state): void
@@ -450,6 +497,14 @@ final class Index
 
         $this->nodes     = [];
         $this->documents = [];
+        $this->deleted   = [];
+
+        // Restore deleted set.
+        if (!empty($state['deleted'])) {
+            foreach ($state['deleted'] as $deletedId) {
+                $this->deleted[(int) $deletedId] = true;
+            }
+        }
 
         foreach ($state['nodes'] as $nodeId => $nodeData) {
             $node = new Node((int) $nodeId, $nodeData['vector'], $nodeData['maxLayer']);

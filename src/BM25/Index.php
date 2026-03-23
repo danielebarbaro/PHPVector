@@ -192,6 +192,39 @@ final class Index
         return count($this->documents);
     }
 
+    /**
+     * Remove a document from the index.
+     *
+     * @param int $nodeId Internal node-ID of the document to remove.
+     * @return bool True if the document was removed, false if it didn't exist.
+     */
+    public function removeDocument(int $nodeId): bool
+    {
+        if (!isset($this->documents[$nodeId])) {
+            return false;
+        }
+
+        // Update totalTokens.
+        if (isset($this->docLengths[$nodeId])) {
+            $this->totalTokens -= $this->docLengths[$nodeId];
+            unset($this->docLengths[$nodeId]);
+        }
+
+        // Remove from inverted index.
+        foreach ($this->invertedIndex as $term => &$postings) {
+            unset($postings[$nodeId]);
+            // Remove empty posting lists to save memory.
+            if (empty($postings)) {
+                unset($this->invertedIndex[$term]);
+            }
+        }
+        unset($postings);
+
+        unset($this->documents[$nodeId]);
+
+        return true;
+    }
+
     /** Vocabulary size (unique terms in the index). */
     public function vocabularySize(): int
     {
