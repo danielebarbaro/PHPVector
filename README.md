@@ -315,6 +315,27 @@ $db = new VectorDatabase(
     tokenizer: new SimpleTokenizer(new FileStopWords('/path/to/stopwords.txt')),
 );
 
+### Stop words file format (`FileStopWords`)
+
+Use a plain UTF-8 text file with one stop word per line.
+
+Rules:
+- Empty lines are ignored
+- Lines starting with `#` are treated as comments
+- Words are normalized to lowercase when loaded
+
+Example (`stopwords-it.txt`):
+
+```txt
+# Italian stop words
+e
+di
+a
+che
+il
+la
+```
+
 // No stop words
 $db = new VectorDatabase(
     tokenizer: new SimpleTokenizer(stopWords: []),
