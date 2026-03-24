@@ -400,10 +400,100 @@ $filter = MetadataFilter::contains('tags', 'php');  // matches ['tags' => ['php'
 
 Pass filters to any search method. Multiple filters are ANDed together by default.
 
+```php
+use PHPVector\MetadataFilter;
+
+// Vector search with filters
+$results = $db->vectorSearch(
+    vector: $queryVector,
+    k: 10,
+    filters: [
+        MetadataFilter::eq('lang', 'en'),
+        MetadataFilter::gt('year', 2020),
+    ],
+);
+
+// Text search with filters
+$results = $db->textSearch(
+    query: 'machine learning',
+    k: 10,
+    filters: [
+        MetadataFilter::in('category', ['tech', 'science']),
+    ],
+);
+
+// Hybrid search with filters
+$results = $db->hybridSearch(
+    vector: $queryVector,
+    text: 'machine learning',
+    k: 10,
+    filters: [
+        MetadataFilter::eq('status', 'published'),
+    ],
+);
+```
 
 ### OR groups (nested arrays)
 
 Wrap filters in a nested array to create OR groups. Filters at the top level are ANDed; filters inside a nested array are ORed.
+
+```php
+// (category = 'tech' OR category = 'science') AND status = 'published'
+$results = $db->vectorSearch(
+    vector: $queryVector,
+    k: 10,
+    filters: [
+        [
+            MetadataFilter::eq('category', 'tech'),
+            MetadataFilter::eq('category', 'science'),
+        ],  // OR group
+        MetadataFilter::eq('status', 'published'),  // ANDed with the OR group
+    ],
+);
+```
+
+### Over-fetching for filtered queries
+
+When filters are applied, the search may need to examine more candidates than `k` to find enough matching documents. By default, the search fetches `k * 5` candidates, then filters. You can tune this:
+
+```php
+// Fetch 10× candidates before filtering (useful when filters are very selective)
+$results = $db->vectorSearch(
+    vector: $queryVector,
+    k: 10,
+    filters: [MetadataFilter::eq('rare_tag', 'value')],
+    overFetch: 10,
+);
+```
+
+> **Note:** Filtered queries may return fewer than `k` results if not enough documents match.
+
+### Updating metadata
+
+Update metadata on existing documents without re-indexing vectors or text:
+
+```php
+// Add or update metadata keys
+$db->patchMetadata(id: 1, patch: [
+    'status' => 'archived',
+    'updated_at' => '2026-03-24',
+]);
+
+// Remove metadata keys by setting to null
+$db->patchMetadata(id: 1, patch: [
+    'deprecated_field' => null,  // key will be removed
+]);
+
+// patchMetadata returns false if document not found
+if (!$db->patchMetadata(id: 999, patch: ['key' => 'value'])) {
+    echo "Document not found\n";
+}
+```
+
+The `patchMetadata()` method:
+- Merges patch into existing metadata (existing keys preserved unless overwritten)
+- Does NOT touch HNSW or BM25 indexes (fast, metadata-only operation)
+- Persists immediately when database has a path configured
 
 ### Metadata-only search
 
@@ -414,6 +504,25 @@ Query documents by metadata alone, without a vector or text query:
 $results = $db->metadataSearch(
     filters: [MetadataFilter::eq('status', 'published')],
 );
+
+// With limit
+$results = $db->metadataSearch(
+    filters: [MetadataFilter::gt('year', 2020)],
+    limit: 100,
+);
+
+// With sorting by metadata key
+$results = $db->metadataSearch(
+    filters: [MetadataFilter::eq('status', 'published')],
+    sortBy: 'created_at',
+    sortDirection: 'desc',  // 'asc' or 'desc'
+);
+
+// Empty filters returns all documents
+$allDocs = $db->metadataSearch(filters: [], limit: 50);
+```
+
+> **Note:** Documents missing the `sortBy` key are placed at the end of results. All results have `score = 1.0` (no ranking).
 
 ### Strict type comparison
 
