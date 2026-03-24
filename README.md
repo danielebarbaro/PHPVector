@@ -367,6 +367,71 @@ $db->save();
 
 Deleted documents are soft-deleted from the HNSW graph (kept for connectivity but excluded from results) and fully removed from the BM25 index. Document files are deleted from disk immediately.
 
+## Metadata filtering
+
+Filter search results by document metadata. Filters can be combined with any search method — vector, text, or hybrid.
+
+### Creating filters
+
+Use the `MetadataFilter` value object. All nine operators are supported:
+
+```php
+use PHPVector\MetadataFilter;
+
+// Equality / inequality
+$filter = MetadataFilter::eq('status', 'published');
+$filter = MetadataFilter::neq('type', 'draft');
+
+// Comparison operators
+$filter = MetadataFilter::lt('price', 100);
+$filter = MetadataFilter::lte('price', 100);
+$filter = MetadataFilter::gt('rating', 4.0);
+$filter = MetadataFilter::gte('rating', 4.0);
+
+// Set membership
+$filter = MetadataFilter::in('category', ['tech', 'science', 'engineering']);
+$filter = MetadataFilter::notIn('status', ['deleted', 'archived']);
+
+// Array containment — checks if metadata array contains the value
+$filter = MetadataFilter::contains('tags', 'php');  // matches ['tags' => ['php', 'vector']]
+```
+
+### Filtering search results
+
+Pass filters to any search method. Multiple filters are ANDed together by default.
+
+
+### OR groups (nested arrays)
+
+Wrap filters in a nested array to create OR groups. Filters at the top level are ANDed; filters inside a nested array are ORed.
+
+### Metadata-only search
+
+Query documents by metadata alone, without a vector or text query:
+
+```php
+// Find all documents matching filters
+$results = $db->metadataSearch(
+    filters: [MetadataFilter::eq('status', 'published')],
+);
+
+### Strict type comparison
+
+Metadata filtering uses **strict type comparison** (PHP `===`). This means:
+- String `'5'` does NOT match integer `5`
+- Float `1.0` does NOT match integer `1`
+
+```php
+// Document with metadata: ['year' => 2024] (integer)
+MetadataFilter::eq('year', 2024);    // ✓ matches
+MetadataFilter::eq('year', '2024');  // ✗ does not match (string vs int)
+
+// Document with metadata: ['rating' => 4.5] (float)
+MetadataFilter::gt('rating', 4);     // ✓ matches (4.5 > 4)
+MetadataFilter::eq('rating', 4.5);   // ✓ matches
+MetadataFilter::eq('rating', '4.5'); // ✗ does not match (string vs float)
+```
+
 ## Custom tokenizer
 
 Implement `TokenizerInterface` to plug in stemming, lemmatization, or any language-specific logic.
