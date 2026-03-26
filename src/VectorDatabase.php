@@ -206,7 +206,13 @@ final class VectorDatabase
         if ($this->path !== null) {
             $docFile = $this->path . '/docs/' . $nodeId . '.bin';
             if (file_exists($docFile)) {
-                unlink($docFile);
+                // Suppress PHP warning and handle failure explicitly to keep
+                // on-disk state consistent with in-memory indexes.
+                if (!@unlink($docFile) && file_exists($docFile)) {
+                    throw new \RuntimeException(
+                        "Failed to delete persisted document file: {$docFile}"
+                    );
+                }
             }
         }
 
