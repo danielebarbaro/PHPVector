@@ -188,7 +188,12 @@ final class VectorDatabase
         $nodeId = $this->docIdToNodeId[$id];
 
         // Soft-delete from HNSW (node stays for connectivity, excluded from results).
-        $this->hnswIndex->delete($nodeId);
+        $deletedFromHnsw = $this->hnswIndex->delete($nodeId);
+        if ($deletedFromHnsw !== true) {
+            throw new \RuntimeException(
+                sprintf('Failed to delete node "%s" from HNSW index.', (string) $nodeId)
+            );
+        }
 
         // Fully remove from BM25.
         $this->bm25Index->removeDocument($nodeId);
