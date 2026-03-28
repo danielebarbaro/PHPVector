@@ -1,379 +1,587 @@
-#!/usr/bin/env php
 <?php
-
-/**
- * PHPVector Benchmark
- *
- * Measures index build throughput, serial QPS, P99 tail latency, Recall@k, and
- * persistence speed following the VectorDBBench methodology.
- *
- * Usage:
- *   php benchmark/benchmark.php [options]
- *
- * Options:
- *   --scenarios=<list>        Comma-separated: xs,small,medium,large,highdim  (default: xs,small)
- *   --k=<n>                   Nearest neighbours to retrieve                   (default: 10)
- *   --queries=<n>             Search queries per scenario                       (default: 200)
- *   --recall-samples=<n>      Ground-truth samples for recall computation       (default: 50)
- *   --ef-search=<n>           HNSW efSearch                                    (default: 50)
- *   --ef-construction=<n>     HNSW efConstruction                              (default: 200)
- *   --m=<n>                   HNSW M parameter                                 (default: 16)
- *   --seed=<n>                Random seed for reproducibility                  (default: 42)
- *   --output=<file>           Write Markdown report to file (default: stdout)
- *   --no-save                 Skip persistence benchmarks (save / open)
- *   --no-recall               Skip recall computation
- *   --help, -h                Show this help
- *
- * Examples:
- *   php benchmark/benchmark.php
- *   php benchmark/benchmark.php --scenarios=small,medium,large --queries=500
- *   php benchmark/benchmark.php --scenarios=large --no-recall --output=report.md
- */
 
 declare(strict_types=1);
 
-// ── Bootstrap ─────────────────────────────────────────────────────────────────
+namespace PHPVector\Benchmark;
 
-$autoload = dirname(__DIR__) . '/vendor/autoload.php';
-if (!file_exists($autoload)) {
-    fwrite(STDERR, "Error: vendor/autoload.php not found — run 'composer install' first.\n");
-    exit(1);
-}
-require $autoload;
-
-ini_set('memory_limit', '2G');
-
-use PHPVector\Benchmark\BruteForce;
-use PHPVector\Benchmark\Stats;
-use PHPVector\Benchmark\Report;
+use FilesystemIterator;
 use PHPVector\BM25\Config as BM25Config;
 use PHPVector\BM25\SimpleTokenizer;
 use PHPVector\Document;
 use PHPVector\HNSW\Config as HNSWConfig;
 use PHPVector\VectorDatabase;
+use RecursiveDirectoryIterator;
+use RecursiveIteratorIterator;
 
-// ── Built-in scenario definitions ─────────────────────────────────────────────
-//
-// Each scenario generates N random unit-normalised vectors of the given
-// dimension — matching the SIFT / Cohere dimension ranges used by VectorDBBench.
-
-const SCENARIOS = [
-    'xs'      => ['n' =>   1_000, 'dims' =>  128, 'label' => 'XS',  'desc' => '1 K × 128d'],
-    'small'   => ['n' =>  10_000, 'dims' =>  128, 'label' => 'S',   'desc' => '10 K × 128d'],
-    'medium'  => ['n' =>  50_000, 'dims' =>  128, 'label' => 'M',   'desc' => '50 K × 128d'],
-    'large'   => ['n' => 100_000, 'dims' =>  128, 'label' => 'L',   'desc' => '100 K × 128d'],
-    'highdim' => ['n' =>  10_000, 'dims' =>  768, 'label' => 'HD',  'desc' => '10 K × 768d'],
-];
-
-// ── CLI argument parsing ───────────────────────────────────────────────────────
-
-$opts = getopt('h', [
-    'scenarios:', 'k:', 'queries:', 'recall-samples:',
-    'ef-search:', 'ef-construction:', 'm:', 'seed:',
-    'output:', 'no-save', 'no-persist', 'no-recall', 'help', 'h',
-]);
-
-if (isset($opts['help']) || isset($opts['h'])) {
-    // Extract and print the file's opening docblock as usage text.
-    $src = file_get_contents(__FILE__);
-    if (preg_match('#/\*\*(.*?)\*/#s', $src, $m)) {
-        echo preg_replace('/^\s*\* ?/m', '', trim($m[1]));
-        echo "\n";
-    }
-    exit(0);
-}
-
-$scenarioKeys = array_filter(
-    explode(',', $opts['scenarios'] ?? 'xs,small'),
-    static fn(string $k): bool => isset(SCENARIOS[$k]),
-);
-if (empty($scenarioKeys)) {
-    fwrite(STDERR, "Error: no valid scenarios specified. Choose from: " . implode(', ', array_keys(SCENARIOS)) . "\n");
-    exit(1);
-}
-
-$k             = max(1, (int) ($opts['k'] ?? 10));
-$queries       = max(1, (int) ($opts['queries'] ?? 200));
-$recallSamples = max(1, (int) ($opts['recall-samples'] ?? 50));
-$efSearch      = max(1, (int) ($opts['ef-search'] ?? 50));
-$efConstr      = max(1, (int) ($opts['ef-construction'] ?? 200));
-$m             = max(2, (int) ($opts['m'] ?? 16));
-$seed          = (int) ($opts['seed'] ?? 42);
-$outputFile    = $opts['output'] ?? null;
-$noPersist     = isset($opts['no-save']) || isset($opts['no-persist']);
-$noRecall      = isset($opts['no-recall']);
-
-$hnswConfig = new HNSWConfig(
-    M:               $m,
-    efConstruction:  max($efConstr, $m),  // efConstruction must be ≥ M
-    efSearch:        $efSearch,
-);
-
-// ── Helpers ────────────────────────────────────────────────────────────────────
-
-function progress(string $msg): void
+final class Benchmark
 {
-    fwrite(STDERR, $msg);
-}
+    private const SCENARIOS = [
+        'xs'      => ['n' =>   1_000, 'dims' =>  128, 'label' => 'XS',  'desc' => '1 K x 128d'],
+        'small'   => ['n' =>  10_000, 'dims' =>  128, 'label' => 'S',   'desc' => '10 K x 128d'],
+        'medium'  => ['n' =>  50_000, 'dims' =>  128, 'label' => 'M',   'desc' => '50 K x 128d'],
+        'large'   => ['n' => 100_000, 'dims' =>  128, 'label' => 'L',   'desc' => '100 K x 128d'],
+        'highdim' => ['n' =>  10_000, 'dims' =>  768, 'label' => 'HD',  'desc' => '10 K x 768d'],
+    ];
 
-/**
- * Generate N + $queries random unit-normalised vectors deterministically.
- * The first N are used as the dataset; the remaining $queries as search queries.
- * Queries are kept disjoint from the dataset so they are never exact matches.
- *
- * @return array{float[][], float[][]}  [dataVectors, queryVectors]
- */
-function generateData(int $n, int $dims, int $queries, int $seed): array
-{
-    mt_srand($seed);
+    private const PROFILES = [
+        'quick' => [
+            'vector_search' => true,
+            'text_search'   => false,
+            'hybrid_search' => false,
+            'update'        => false,
+            'delete'        => false,
+            'persistence'   => false,
+            'recall'        => false,
+        ],
+        'full' => [
+            'vector_search' => true,
+            'text_search'   => true,
+            'hybrid_search' => true,
+            'update'        => true,
+            'delete'        => true,
+            'persistence'   => true,
+            'recall'        => 'auto',
+        ],
+        'ci' => [
+            'vector_search' => true,
+            'text_search'   => true,
+            'hybrid_search' => true,
+            'update'        => true,
+            'delete'        => true,
+            'persistence'   => true,
+            'recall'        => false,
+        ],
+    ];
 
-    $total   = $n + $queries;
-    $all     = [];
+    private const VOCABULARY = [
+        'alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta', 'theta',
+        'iota', 'kappa', 'lambda', 'mu', 'nu', 'xi', 'omicron', 'pi', 'rho',
+        'sigma', 'tau', 'upsilon', 'phi', 'chi', 'psi', 'omega',
+    ];
 
-    for ($i = 0; $i < $total; $i++) {
-        $v    = [];
-        $norm = 0.0;
-        for ($j = 0; $j < $dims; $j++) {
-            $x     = (mt_rand() / mt_getrandmax()) * 2.0 - 1.0;
-            $v[]   = $x;
-            $norm += $x * $x;
+    private const SEARCH_TERMS = [
+        'alpha beta',
+        'gamma delta epsilon',
+        'omega psi chi',
+        'sigma tau',
+        'lambda mu nu',
+        'theta iota kappa',
+        'zeta eta',
+        'rho omicron',
+    ];
+
+    /** @var array<string, array{n: int, dims: int, label: string, desc: string}> */
+    private array $scenarios;
+
+    /** @var array<string, bool|string> */
+    private array $profile;
+
+    public function __construct(
+        private readonly HNSWConfig $hnswConfig,
+        private readonly array $scenarioKeys,
+        string $profileName = 'full',
+        private readonly int $k = 10,
+        private readonly int $queries = 200,
+        private readonly int $recallSamples = 50,
+        private readonly int $recallThreshold = 50_000,
+        private readonly int $seed = 42,
+        private readonly ?int $documentOverride = null,
+        private readonly ?int $dimensionOverride = null,
+        private readonly ?bool $recallOverride = null,
+        private readonly ?bool $persistOverride = null,
+    ) {
+        $this->profile = self::PROFILES[$profileName]
+            ?? throw new \InvalidArgumentException("Unknown profile: {$profileName}");
+
+        $this->scenarios = [];
+        foreach ($this->scenarioKeys as $key) {
+            if (!isset(self::SCENARIOS[$key])) {
+                throw new \InvalidArgumentException("Unknown scenario: {$key}");
+            }
+            $scenario = self::SCENARIOS[$key];
+            if ($this->documentOverride !== null) {
+                $scenario['n'] = $this->documentOverride;
+            }
+            if ($this->dimensionOverride !== null) {
+                $scenario['dims'] = $this->dimensionOverride;
+            }
+            $this->scenarios[$key] = $scenario;
         }
-        $norm  = sqrt($norm) ?: 1.0;
-        $all[] = array_map(static fn(float $x): float => $x / $norm, $v);
     }
 
-    return [array_slice($all, 0, $n), array_slice($all, $n)];
-}
+    /** @return array<string, string> */
+    public static function availableScenarios(): array
+    {
+        return array_map(
+            static fn(array $s): string => $s['desc'],
+            self::SCENARIOS,
+        );
+    }
 
-/**
- * Compute Recall@k for multiple k values by comparing HNSW results against
- * exact brute-force results over the first $nRecall query vectors.
- *
- * @param float[][] $queryVectors
- * @return array<int, float>  k → recall in [0, 1]
- */
-function computeRecall(
-    VectorDatabase $db,
-    BruteForce $bf,
-    array $queryVectors,
-    int $k,
-    int $nRecall,
-): array {
-    // Always measure recall at 1, 5 (if k≥5), and k.
-    $kValues = array_values(array_unique([1, min(5, $k), $k]));
-    $totals  = array_fill_keys($kValues, 0.0);
+    /** @return string[] */
+    public static function availableProfiles(): array
+    {
+        return array_keys(self::PROFILES);
+    }
 
-    for ($i = 0; $i < $nRecall; $i++) {
-        $q        = $queryVectors[$i];
-        $bfIds    = $bf->search($q, $k);
-        $hnswIds  = array_map(
-            static fn($r) => $r->document->id,
-            $db->vectorSearch($q, $k),
+    /** @return array<string, array<string, mixed>> */
+    public function run(): array
+    {
+        $allResults = [];
+        foreach ($this->scenarios as $key => $scenario) {
+            $allResults[$key] = $this->runScenario($key, $scenario);
+        }
+        return $allResults;
+    }
+
+    // ── Scenario runner ──────────────────────────────────────────────────
+
+    /** @param array{n: int, dims: int, label: string, desc: string} $scenario */
+    private function runScenario(string $key, array $scenario): array
+    {
+        $n = $scenario['n'];
+        $dims = $scenario['dims'];
+
+        $this->log(sprintf("\n[%s] %s\n", strtoupper($key), $scenario['desc']));
+
+        // 1. Generate data
+        $this->log("  Generating {$n} vectors ({$dims}d)...\n");
+        [$dataVectors, $queryVectors, $documents] = $this->generateData($n, $dims);
+
+        // 2. Insert
+        $this->log("  Building index...\n");
+        $insertMeasurement = $this->measure(function () use ($documents, $n): VectorDatabase {
+            $db = new VectorDatabase(
+                $this->hnswConfig,
+                new BM25Config(),
+                new SimpleTokenizer([]),
+            );
+            foreach ($documents as $i => $doc) {
+                $db->addDocument($doc);
+                if ($i > 0 && $i % 5_000 === 0) {
+                    $this->log("    {$i}/{$n}\r");
+                }
+            }
+            $this->log("    {$n}/{$n}   \n");
+            return $db;
+        });
+
+        /** @var VectorDatabase $db */
+        $db = $insertMeasurement['result'];
+
+        $results = [
+            'scenario' => $scenario,
+            'insert' => [
+                'operations' => $n,
+                'total_time_s' => $insertMeasurement['elapsed_seconds'],
+                'ops_per_second' => $n / $insertMeasurement['elapsed_seconds'],
+                'memory_delta_mb' => $insertMeasurement['memory_delta_mb'],
+                'memory_current_mb' => $insertMeasurement['memory_current_mb'],
+            ],
+        ];
+
+        // 3. Warmup
+        $warmup = min(20, $this->queries);
+        for ($i = 0; $i < $warmup; $i++) {
+            $db->vectorSearch($queryVectors[$i], $this->k);
+        }
+
+        // 4. Vector search
+        $this->log("  Vector search ({$this->queries} queries)...\n");
+        $vsm = $this->measureSearchLatencies(
+            fn(array $v) => $db->vectorSearch($v, $this->k),
+            $queryVectors,
+        );
+        $results['vector_search'] = $this->buildSearchMetrics($vsm);
+
+        // Conditional operations based on profile
+        if ($this->isEnabled('text_search')) {
+            $results['text_search'] = $this->benchmarkTextSearch($db);
+        }
+        if ($this->isEnabled('hybrid_search')) {
+            $results['hybrid_search'] = $this->benchmarkHybridSearch($db, $queryVectors);
+        }
+        if ($this->isEnabled('update')) {
+            $results['update'] = $this->benchmarkUpdate($db, $n, $dims);
+        }
+        if ($this->isEnabled('delete')) {
+            $results['delete'] = $this->benchmarkDelete($db, $n);
+        }
+        if ($this->isRecallEnabled($n)) {
+            $results['recall'] = $this->benchmarkRecall($db, $dataVectors, $queryVectors);
+        }
+        if ($this->isEnabled('persistence')) {
+            $results['persistence'] = $this->benchmarkPersistence($documents, $n);
+        }
+
+        $this->log("  Done.\n");
+
+        return $results;
+    }
+
+    // ── Profile checks ───────────────────────────────────────────────────
+
+    private function isEnabled(string $operation): bool
+    {
+        if ($operation === 'persistence' && $this->persistOverride !== null) {
+            return $this->persistOverride;
+        }
+        $val = $this->profile[$operation] ?? false;
+        return $val === true;
+    }
+
+    private function isRecallEnabled(int $n): bool
+    {
+        if ($this->recallOverride !== null) {
+            return $this->recallOverride;
+        }
+        $val = $this->profile['recall'] ?? false;
+        if ($val === 'auto') {
+            return $n <= $this->recallThreshold;
+        }
+        return $val === true;
+    }
+
+    // ── Operation benchmarks ─────────────────────────────────────────────
+
+    private function benchmarkTextSearch(VectorDatabase $db): array
+    {
+        $this->log("  Text search ({$this->queries} queries)...\n");
+
+        $queries = array_map(
+            fn(int $i): string => self::SEARCH_TERMS[$i % count(self::SEARCH_TERMS)],
+            range(0, $this->queries - 1),
         );
 
-        foreach ($kValues as $kv) {
-            $bfSlice   = array_slice($bfIds, 0, $kv);
-            $hnswSlice = array_slice($hnswIds, 0, $kv);
-            $totals[$kv] += count(array_intersect($bfSlice, $hnswSlice)) / $kv;
-        }
+        $m = $this->measureSearchLatencies(
+            fn(string $q) => $db->textSearch($q, $this->k),
+            $queries,
+        );
+
+        return $this->buildSearchMetrics($m);
     }
 
-    return array_map(static fn(float $t): float => $t / $nRecall, $totals);
-}
+    /** @param float[][] $queryVectors */
+    private function benchmarkHybridSearch(VectorDatabase $db, array $queryVectors): array
+    {
+        $this->log("  Hybrid search ({$this->queries} queries)...\n");
 
-/**
- * Recursively compute the total size of a directory in megabytes.
- */
-function folderSizeMb(string $dir): float
-{
-    $bytes = 0;
-    $iter  = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS));
-    foreach ($iter as $file) {
-        $bytes += $file->getSize();
-    }
-    return $bytes / (1024 * 1024);
-}
+        $m = $this->measure(function () use ($db, $queryVectors): array {
+            $latencies = [];
+            foreach ($queryVectors as $i => $vector) {
+                $text = self::SEARCH_TERMS[$i % count(self::SEARCH_TERMS)];
+                $t0 = hrtime(true);
+                $db->hybridSearch($vector, $text, $this->k);
+                $latencies[] = (hrtime(true) - $t0) / 1e6;
+            }
+            sort($latencies);
+            return $latencies;
+        });
 
-/**
- * Recursively delete a directory and all its contents.
- */
-function rrmdir(string $dir): void
-{
-    if (!is_dir($dir)) {
-        return;
-    }
-    foreach ((array) glob($dir . '/*') as $item) {
-        is_dir((string) $item) ? rrmdir((string) $item) : unlink((string) $item);
-    }
-    rmdir($dir);
-}
-
-/**
- * Run a complete benchmark for one scenario and return the result array.
- */
-function runScenario(
-    array $scenario,
-    int $k,
-    int $queries,
-    int $recallSamples,
-    HNSWConfig $hnswConfig,
-    int $seed,
-    bool $noPersist,
-    bool $noRecall,
-): array {
-    $n    = $scenario['n'];
-    $dims = $scenario['dims'];
-
-    // 1. Generate dataset ──────────────────────────────────────────────────
-    progress("  Generating {$n} vectors ({$dims}d) …\n");
-    [$dataVectors, $queryVectors] = generateData($n, $dims, $queries, $seed);
-
-    // 2. Index build ───────────────────────────────────────────────────────
-    progress("  Building HNSW index …\n");
-
-    $buildStart = hrtime(true);
-
-    $db = new VectorDatabase($hnswConfig, new BM25Config(), new SimpleTokenizer([]));
-    for ($i = 0; $i < $n; $i++) {
-        $db->addDocument(new Document(id: $i, vector: $dataVectors[$i]));
-        if ($i > 0 && $i % 10_000 === 0) {
-            progress("    {$i}/{$n} …\r");
-        }
+        return $this->buildSearchMetrics([
+            'latencies_ms' => $m['result'],
+            'elapsed_seconds' => $m['elapsed_seconds'],
+            'memory_delta_mb' => $m['memory_delta_mb'],
+            'memory_current_mb' => $m['memory_current_mb'],
+        ]);
     }
 
-    $buildTime = (hrtime(true) - $buildStart) / 1e9;
-    // Report memory committed to the PHP process after the index is fully built.
-    $memUsed   = memory_get_usage(true) / (1024 * 1024);
+    private function benchmarkUpdate(VectorDatabase $db, int $n, int $dims): array
+    {
+        $count = $this->calculateOperationCount($n);
+        $this->log("  Update ({$count} documents)...\n");
 
-    progress("    done — {$n}/{$n}   \n");
+        $m = $this->measure(function () use ($db, $count, $dims): void {
+            foreach (range(0, $count - 1) as $i) {
+                $db->updateDocument(new Document(
+                    id: $i,
+                    vector: $this->generateNormalizedVector($dims),
+                    text: $this->generateRandomText(),
+                    metadata: ['category' => 99, 'updated' => true],
+                ));
+            }
+        });
 
-    // 3. Warmup ────────────────────────────────────────────────────────────
-    $warmup = min(20, $queries);
-    for ($i = 0; $i < $warmup; $i++) {
-        $db->vectorSearch($queryVectors[$i], $k);
+        return [
+            'operations' => $count,
+            'total_time_s' => $m['elapsed_seconds'],
+            'ops_per_second' => $count / $m['elapsed_seconds'],
+            'memory_delta_mb' => $m['memory_delta_mb'],
+            'memory_current_mb' => $m['memory_current_mb'],
+        ];
     }
 
-    // 4. Serial search latency ─────────────────────────────────────────────
-    progress("  Running {$queries} search queries …\n");
+    private function benchmarkDelete(VectorDatabase $db, int $n): array
+    {
+        $count = $this->calculateOperationCount($n);
+        $start = $n - $count;
+        $this->log("  Delete ({$count} documents)...\n");
 
-    $latencies  = [];
-    $searchStart = hrtime(true);
+        $m = $this->measure(function () use ($db, $start, $n): void {
+            foreach (range($start, $n - 1) as $i) {
+                $db->deleteDocument($i);
+            }
+        });
 
-    for ($i = 0; $i < $queries; $i++) {
-        $t0 = hrtime(true);
-        $db->vectorSearch($queryVectors[$i], $k);
-        $latencies[] = hrtime(true) - $t0;
+        return [
+            'operations' => $count,
+            'total_time_s' => $m['elapsed_seconds'],
+            'ops_per_second' => $count / $m['elapsed_seconds'],
+            'memory_delta_mb' => $m['memory_delta_mb'],
+            'memory_current_mb' => $m['memory_current_mb'],
+        ];
     }
 
-    $totalSearch = (hrtime(true) - $searchStart) / 1e9;
-    $qps         = $queries / $totalSearch;
-    $latStats    = Stats::latencyStats($latencies);
-
-    // 5. Recall ────────────────────────────────────────────────────────────
-    $recall = null;
-    if (!$noRecall) {
-        $nRecall = min($recallSamples, $queries);
-        progress("  Computing Recall@{$k} over {$nRecall} ground-truth queries …\n");
+    /**
+     * @param float[][] $dataVectors
+     * @param float[][] $queryVectors
+     * @return array<int, float>
+     */
+    private function benchmarkRecall(VectorDatabase $db, array $dataVectors, array $queryVectors): array
+    {
+        $nRecall = min($this->recallSamples, $this->queries);
+        $this->log("  Computing Recall@{$this->k} over {$nRecall} queries...\n");
 
         $bf = new BruteForce();
+        $n = count($dataVectors);
         for ($i = 0; $i < $n; $i++) {
             $bf->add($i, $dataVectors[$i]);
         }
 
-        $recall = computeRecall($db, $bf, $queryVectors, $k, $nRecall);
-        unset($bf);
+        $kValues = array_values(array_unique([1, min(5, $this->k), $this->k]));
+        $totals = array_fill_keys($kValues, 0.0);
+
+        for ($i = 0; $i < $nRecall; $i++) {
+            $q = $queryVectors[$i];
+            $bfIds = $bf->search($q, $this->k);
+            $hnswIds = array_map(
+                static fn($r) => $r->document->id,
+                $db->vectorSearch($q, $this->k),
+            );
+
+            foreach ($kValues as $kv) {
+                $bfSlice = array_slice($bfIds, 0, $kv);
+                $hnswSlice = array_slice($hnswIds, 0, $kv);
+                $totals[$kv] += count(array_intersect($bfSlice, $hnswSlice)) / $kv;
+            }
+        }
+
+        return array_map(static fn(float $t): float => $t / $nRecall, $totals);
     }
 
-    // 6. Persistence ───────────────────────────────────────────────────────
-    //
-    // Build a fresh VectorDatabase with a temp folder path so document files
-    // are written async during insert.  save() flushes the HNSW graph and
-    // BM25 index (waiting for any outstanding async doc writes first).
-    // open() reads only hnsw.bin + bm25.bin — document files are lazy.
-    $persist = null;
-    if (!$noPersist) {
-        progress("  Benchmarking save / open …\n");
+    /**
+     * @param Document[] $documents
+     */
+    private function benchmarkPersistence(array $documents, int $n): array
+    {
+        $this->log("  Benchmarking save/open...\n");
 
         $tmpDir = sys_get_temp_dir() . '/phpvbench_' . uniqid('', true);
         mkdir($tmpDir, 0755, true);
 
-        $dbSave = new VectorDatabase($hnswConfig, new BM25Config(), new SimpleTokenizer([]), $tmpDir);
-        for ($i = 0; $i < $n; $i++) {
-            $dbSave->addDocument(new Document(id: $i, vector: $dataVectors[$i]));
-        }
+        // Save
+        $saveMeasurement = $this->measure(function () use ($documents, $tmpDir): void {
+            $dbSave = new VectorDatabase(
+                $this->hnswConfig,
+                new BM25Config(),
+                new SimpleTokenizer([]),
+                $tmpDir,
+            );
+            foreach ($documents as $doc) {
+                $dbSave->addDocument($doc);
+            }
+            $dbSave->save();
+        });
 
-        $t0 = hrtime(true);
-        $dbSave->save();
-        $saveTime = (hrtime(true) - $t0) / 1e9;
+        $folderSizeMb = $this->folderSizeMb($tmpDir);
 
-        $folderSizeMb = folderSizeMb($tmpDir);
+        // Open
+        $openMeasurement = $this->measure(
+            fn() => VectorDatabase::open($tmpDir, $this->hnswConfig),
+        );
 
-        $t0 = hrtime(true);
-        VectorDatabase::open($tmpDir, $hnswConfig);
-        $openTime = (hrtime(true) - $t0) / 1e9;
+        $this->rrmdir($tmpDir);
 
-        rrmdir($tmpDir);
-
-        $persist = [
-            'folder_size_mb' => $folderSizeMb,
-            'save_s'         => $saveTime,
-            'save_mb_s'      => $saveTime > 0.0 ? $folderSizeMb / $saveTime : 0.0,
-            'open_s'         => $openTime,
-            'open_mb_s'      => $openTime > 0.0 ? $folderSizeMb / $openTime : 0.0,
+        return [
+            'save' => [
+                'total_time_s' => $saveMeasurement['elapsed_seconds'],
+                'disk_size_mb' => $folderSizeMb,
+                'throughput_mb_s' => $saveMeasurement['elapsed_seconds'] > 0.0
+                    ? $folderSizeMb / $saveMeasurement['elapsed_seconds'] : 0.0,
+                'memory_delta_mb' => $saveMeasurement['memory_delta_mb'],
+                'memory_current_mb' => $saveMeasurement['memory_current_mb'],
+            ],
+            'open' => [
+                'total_time_s' => $openMeasurement['elapsed_seconds'],
+                'throughput_mb_s' => $openMeasurement['elapsed_seconds'] > 0.0
+                    ? $folderSizeMb / $openMeasurement['elapsed_seconds'] : 0.0,
+                'memory_delta_mb' => $openMeasurement['memory_delta_mb'],
+                'memory_current_mb' => $openMeasurement['memory_current_mb'],
+            ],
         ];
     }
 
-    return [
-        'scenario' => $scenario,
-        'build'    => [
-            'time_s'     => $buildTime,
-            'throughput' => $n / $buildTime,
-            'memory_mb'  => $memUsed,
-        ],
-        'search' => [
-            'queries'     => $queries,
-            'qps'         => $qps,
-            'latency_ms'  => $latStats,
-        ],
-        'recall'  => $recall,
-        'persist' => $persist,
-    ];
-}
+    // ── Metrics helpers ──────────────────────────────────────────────────
 
-// ── Main loop ─────────────────────────────────────────────────────────────────
+    private function buildSearchMetrics(array $measurement): array
+    {
+        $latencies = $measurement['latencies_ms'];
+        $count = count($latencies);
 
-$results = [];
-
-foreach ($scenarioKeys as $key) {
-    $scenario = SCENARIOS[$key];
-    progress(sprintf("\n[%s] %s\n", strtoupper($key), $scenario['desc']));
-
-    $results[$key] = runScenario(
-        scenario:      $scenario,
-        k:             $k,
-        queries:       $queries,
-        recallSamples: $recallSamples,
-        hnswConfig:    $hnswConfig,
-        seed:          $seed,
-        noPersist:     $noPersist,
-        noRecall:      $noRecall,
-    );
-
-    progress("  Done.\n");
-}
-
-// ── Generate report ───────────────────────────────────────────────────────────
-
-progress("\nGenerating report …\n");
-
-$report = Report::generate($results, $hnswConfig, $k, $queries, $recallSamples);
-
-if ($outputFile !== null) {
-    if (file_put_contents($outputFile, $report) === false) {
-        fwrite(STDERR, "Error: could not write to {$outputFile}\n");
-        exit(1);
+        return [
+            'operations' => $this->queries,
+            'total_time_s' => $measurement['elapsed_seconds'],
+            'qps' => $this->queries / $measurement['elapsed_seconds'],
+            'latency_p50_ms' => $latencies[(int) ($count * 0.50)],
+            'latency_p95_ms' => $latencies[(int) ($count * 0.95)],
+            'latency_p99_ms' => $latencies[(int) ($count * 0.99)],
+            'memory_delta_mb' => $measurement['memory_delta_mb'],
+            'memory_current_mb' => $measurement['memory_current_mb'],
+        ];
     }
-    progress("Report written to: {$outputFile}\n\n");
-} else {
-    echo $report;
+
+    // ── Data generation ──────────────────────────────────────────────────
+
+    /**
+     * @return array{0: float[][], 1: float[][], 2: Document[]}
+     */
+    private function generateData(int $n, int $dims): array
+    {
+        mt_srand($this->seed);
+
+        $dataVectors = [];
+        $queryVectors = [];
+        $documents = [];
+        $total = $n + $this->queries;
+
+        for ($i = 0; $i < $total; $i++) {
+            $vector = $this->generateNormalizedVector($dims);
+
+            if ($i < $n) {
+                $dataVectors[] = $vector;
+                $documents[] = new Document(
+                    id: $i,
+                    vector: $vector,
+                    text: $this->generateRandomText(),
+                    metadata: ['category' => $i % 10, 'priority' => $i % 5],
+                );
+            } else {
+                $queryVectors[] = $vector;
+            }
+        }
+
+        return [$dataVectors, $queryVectors, $documents];
+    }
+
+    /** @return float[] */
+    private function generateNormalizedVector(int $dims): array
+    {
+        $v = [];
+        $norm = 0.0;
+        for ($j = 0; $j < $dims; $j++) {
+            $x = (mt_rand() / mt_getrandmax()) * 2.0 - 1.0;
+            $v[] = $x;
+            $norm += $x * $x;
+        }
+        $norm = sqrt($norm) ?: 1.0;
+        return array_map(static fn(float $x): float => $x / $norm, $v);
+    }
+
+    private function generateRandomText(): string
+    {
+        $wordCount = mt_rand(5, 20);
+        return implode(' ', array_map(
+            fn(): string => self::VOCABULARY[array_rand(self::VOCABULARY)],
+            range(1, $wordCount),
+        ));
+    }
+
+    // ── Measurement helpers ──────────────────────────────────────────────
+
+    /**
+     * @template T
+     * @param callable(): T $operation
+     * @return array{result: T, elapsed_seconds: float, memory_delta_mb: float, memory_current_mb: float}
+     */
+    private function measure(callable $operation): array
+    {
+        gc_collect_cycles();
+        $memBefore = memory_get_usage(true);
+        $t0 = hrtime(true);
+
+        $result = $operation();
+
+        $memAfter = memory_get_usage(true);
+
+        return [
+            'result' => $result,
+            'elapsed_seconds' => (hrtime(true) - $t0) / 1e9,
+            'memory_delta_mb' => ($memAfter - $memBefore) / (1024 * 1024),
+            'memory_current_mb' => $memAfter / (1024 * 1024),
+        ];
+    }
+
+    /**
+     * @param callable(mixed): mixed $searchOp
+     * @param array<mixed> $inputs
+     * @return array{latencies_ms: float[], elapsed_seconds: float, memory_delta_mb: float, memory_current_mb: float}
+     */
+    private function measureSearchLatencies(callable $searchOp, array $inputs): array
+    {
+        $m = $this->measure(function () use ($searchOp, $inputs): array {
+            $latencies = [];
+            foreach ($inputs as $input) {
+                $t0 = hrtime(true);
+                $searchOp($input);
+                $latencies[] = (hrtime(true) - $t0) / 1e6;
+            }
+            sort($latencies);
+            return $latencies;
+        });
+
+        return [
+            'latencies_ms' => $m['result'],
+            'elapsed_seconds' => $m['elapsed_seconds'],
+            'memory_delta_mb' => $m['memory_delta_mb'],
+            'memory_current_mb' => $m['memory_current_mb'],
+        ];
+    }
+
+    private function log(string $msg): void
+    {
+        fwrite(STDERR, $msg);
+    }
+
+    private function calculateOperationCount(int $n): int
+    {
+        return min(1_000, (int) ($n * 0.1));
+    }
+
+    // ── Directory utilities ──────────────────────────────────────────────
+
+    private function folderSizeMb(string $dir): float
+    {
+        if (!is_dir($dir)) {
+            return 0.0;
+        }
+        $bytes = 0;
+        $iter = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS),
+        );
+        foreach ($iter as $file) {
+            $bytes += $file->getSize();
+        }
+        return $bytes / (1024 * 1024);
+    }
+
+    private function rrmdir(string $dir): void
+    {
+        if (!is_dir($dir)) {
+            return;
+        }
+        foreach ((array) glob($dir . '/*') as $item) {
+            is_dir((string) $item) ? $this->rrmdir((string) $item) : unlink((string) $item);
+        }
+        rmdir($dir);
+    }
 }
