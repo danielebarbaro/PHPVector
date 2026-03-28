@@ -66,6 +66,7 @@ jobs:
           composer install --prefer-dist --no-progress --no-dev --working-dir=base
 
       - name: Run benchmark on base branch
+        id: base-bench
         run: |
           php base/benchmark/run.php \
             --profile=ci \
@@ -85,6 +86,7 @@ jobs:
             --github-bench=pr-benchmark.json
 
       - name: Compare benchmarks
+        if: steps.base-bench.outcome == 'success'
         uses: openpgpjs/github-action-pull-request-benchmark@v1
         with:
           name: PHPVector Performance
