@@ -46,16 +46,16 @@ jobs:
         with:
           php-version: ${{ env.PHP_VERSION }}
           coverage: none
-          ini-values: memory_limit=1G
+          ini-values: memory_limit=2G
 
       - name: Cache Composer packages (PR)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: pr/vendor
           key: ${{ runner.os }}-php-${{ hashFiles('pr/**/composer.lock') }}
 
       - name: Cache Composer packages (base)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: base/vendor
           key: ${{ runner.os }}-php-${{ hashFiles('base/**/composer.lock') }}
@@ -100,7 +100,7 @@ jobs:
           fail-threshold: '80%'
 
       - name: Upload benchmark artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: benchmark-results-pr
           path: |
@@ -128,7 +128,7 @@ jobs:
           ini-values: memory_limit=1G
 
       - name: Cache Composer packages
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: vendor
           key: ${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
@@ -159,7 +159,7 @@ jobs:
           fail-on-alert: false
 
       - name: Upload benchmark artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: benchmark-results-main
           path: benchmark-results.json
