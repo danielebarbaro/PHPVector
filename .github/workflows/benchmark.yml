@@ -1,0 +1,164 @@
+name: Performance Benchmark
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  deployments: write
+
+concurrency:
+  group: benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PHP_VERSION: '8.3'
+  BENCHMARK_DOCS: 10000
+  BENCHMARK_DIMS: 128
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PR Benchmark: Compare PR against base branch
+  # ─────────────────────────────────────────────────────────────────────────────
+  benchmark-pr:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    name: PR Performance Comparison
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v5
+        with:
+          path: pr
+
+      - name: Checkout base branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.base_ref }}
+          path: base
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          coverage: none
+          ini-values: memory_limit=1G
+
+      - name: Cache Composer packages (PR)
+        uses: actions/cache@v4
+        with:
+          path: pr/vendor
+          key: ${{ runner.os }}-php-${{ hashFiles('pr/**/composer.lock') }}
+
+      - name: Cache Composer packages (base)
+        uses: actions/cache@v4
+        with:
+          path: base/vendor
+          key: ${{ runner.os }}-php-${{ hashFiles('base/**/composer.lock') }}
+
+      - name: Install dependencies
+        run: |
+          composer install --prefer-dist --no-progress --no-dev --working-dir=pr
+          composer install --prefer-dist --no-progress --no-dev --working-dir=base
+
+      - name: Run benchmark on base branch
+        run: |
+          php base/benchmark/run.php \
+            --profile=ci \
+            --scenarios=small \
+            --documents=${{ env.BENCHMARK_DOCS }} \
+            --dimensions=${{ env.BENCHMARK_DIMS }} \
+            --github-bench=base-benchmark.json
+        continue-on-error: true
+
+      - name: Run benchmark on PR branch
+        run: |
+          php pr/benchmark/run.php \
+            --profile=ci \
+            --scenarios=small \
+            --documents=${{ env.BENCHMARK_DOCS }} \
+            --dimensions=${{ env.BENCHMARK_DIMS }} \
+            --github-bench=pr-benchmark.json
+
+      - name: Compare benchmarks
+        uses: openpgpjs/github-action-pull-request-benchmark@v1
+        with:
+          name: PHPVector Performance
+          tool: customBiggerIsBetter
+          pr-benchmark-file-path: pr-benchmark.json
+          base-benchmark-file-path: base-benchmark.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          comment-on-alert: true
+          alert-threshold: '90%'
+          fail-on-alert: false
+          fail-threshold: '80%'
+
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-pr
+          path: |
+            pr-benchmark.json
+            base-benchmark.json
+          retention-days: 14
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Main Benchmark: Store historical data and update graphs
+  # ─────────────────────────────────────────────────────────────────────────────
+  benchmark-main:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    name: Store Benchmark History
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          coverage: none
+          ini-values: memory_limit=1G
+
+      - name: Cache Composer packages
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: ${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-progress --no-dev
+
+      - name: Run benchmark
+        run: |
+          php benchmark/run.php \
+            --profile=ci \
+            --scenarios=small \
+            --documents=${{ env.BENCHMARK_DOCS }} \
+            --dimensions=${{ env.BENCHMARK_DIMS }} \
+            --github-bench=benchmark-results.json
+
+      - name: Store benchmark result
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: PHPVector Performance
+          tool: customBiggerIsBetter
+          output-file-path: benchmark-results.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          benchmark-data-dir-path: docs/benchmark
+          comment-on-alert: true
+          alert-threshold: '150%'
+          fail-on-alert: false
+
+      - name: Upload benchmark artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-main
+          path: benchmark-results.json
+          retention-days: 90
