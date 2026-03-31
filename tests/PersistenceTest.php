@@ -421,15 +421,24 @@ final class PersistenceTest extends TestCase
         $db->addDocument(new Document(id: 2, vector: [0.0, 1.0], text: 'to keep'));
         $db->save();
 
-        // Verify doc file exists
+        // Verify doc files exist after initial save.
         self::assertFileExists($this->tmpDir . '/docs/0.bin');
         self::assertFileExists($this->tmpDir . '/docs/1.bin');
 
-        // Delete document 1 (which is nodeId 0)
+        // Delete document 1 (nodeId 0).
+        // Physical removal is deferred to save() for crash-safety; a tombstone
+        // is written immediately so the deletion survives a crash.
         $db->deleteDocument(1);
 
-        // Doc file should be removed immediately
+        self::assertFileExists($this->tmpDir . '/docs/0.tombstone', 'Tombstone must be created by deleteDocument().');
+        self::assertFileExists($this->tmpDir . '/docs/0.bin', 'Doc file must NOT be removed before save().');
+        self::assertFileExists($this->tmpDir . '/docs/1.bin');
+
+        // After save() both the doc file and the tombstone must be gone.
+        $db->save();
+
         self::assertFileDoesNotExist($this->tmpDir . '/docs/0.bin');
+        self::assertFileDoesNotExist($this->tmpDir . '/docs/0.tombstone');
         self::assertFileExists($this->tmpDir . '/docs/1.bin');
     }
 
