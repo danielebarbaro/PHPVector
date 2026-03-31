@@ -204,6 +204,11 @@ final class VectorDatabase
 
         // Delete document file from disk if persistence is enabled.
         if ($this->path !== null) {
+            // An async pcntl_fork child may still be writing {nodeId}.bin.
+            // Wait for that specific write to finish before unlinking so the
+            // child cannot recreate the file after we delete it.
+            $this->getDocumentStore()->waitForNode($nodeId);
+
             $docFile = $this->path . '/docs/' . $nodeId . '.bin';
             if (file_exists($docFile)) {
                 // Suppress PHP warning and handle failure explicitly to keep
