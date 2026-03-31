@@ -361,16 +361,31 @@ final class Index
             [$epDist, $ep] = $this->searchLayerGreedy($qv, $ep, $epDist, $lc);
         }
 
-        // Full beam search at layer 0.
-        $W = $this->searchLayer($qv, [[$epDist, $ep]], $ef, 0);
+        // Full beam search at layer 0, retrying with a larger ef when soft-deleted
+        // nodes shrink the active result set below $k.  Doubling ef on each retry
+        // costs at most O(log(totalNodes / ef)) extra passes in the worst case.
+        $currentEf  = $ef;
+        $totalNodes = count($this->nodes);
 
-        // Filter out soft-deleted nodes and take the k nearest.
-        if (!empty($this->deleted)) {
-            $W = array_values(array_filter(
-                $W,
-                fn(array $pair) => !isset($this->deleted[$pair[1]])
-            ));
-        }
+        do {
+            $W = $this->searchLayer($qv, [[$epDist, $ep]], $currentEf, 0);
+
+            // Filter out soft-deleted nodes.
+            if (!empty($this->deleted)) {
+                $W = array_values(array_filter(
+                    $W,
+                    fn(array $pair) => !isset($this->deleted[$pair[1]])
+                ));
+            }
+
+            // Stop when we have enough active results, or ef already spans all nodes
+            // (further expansion cannot surface new candidates).
+            if (count($W) >= $k || $currentEf >= $totalNodes) {
+                break;
+            }
+
+            $currentEf = min($currentEf * 2, $totalNodes);
+        } while (true);
 
         $topK = array_slice($W, 0, $k);
         return $this->toSearchResults($topK);
