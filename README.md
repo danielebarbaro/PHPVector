@@ -347,6 +347,26 @@ Available providers:
 - `ItalianStopWords` - Italian stop words
 - `FileStopWords` - Load from file
 
+## Deleting and updating documents
+
+```php
+// Delete a document by ID
+$deleted = $db->deleteDocument(1);  // returns true if found, false otherwise
+
+// Update a document (delete + insert with same ID)
+$updated = $db->updateDocument(new Document(
+    id: 1,
+    vector: [0.5, 0.5, 0.3, 0.2],
+    text: 'Updated content here',
+    metadata: ['version' => 2],
+));
+
+// After modifications, call save() to persist
+$db->save();
+```
+
+Deleted documents are soft-deleted from the HNSW graph (kept for connectivity but excluded from results) and fully removed from the BM25 index. Document files are deleted from disk immediately.
+
 ## Custom tokenizer
 
 Implement `TokenizerInterface` to plug in stemming, lemmatization, or any language-specific logic.

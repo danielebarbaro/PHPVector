@@ -20,7 +20,13 @@ namespace PHPVector\Persistence;
  */
 final class DocumentStore
 {
-    /** @var int[] PIDs of outstanding async child processes. */
+    /**
+     * PIDs of outstanding async child processes, keyed by nodeId.
+     * Keying by nodeId lets waitForNode() drain exactly one write without
+     * blocking every other in-flight write.
+     *
+     * @var array<int, int>  nodeId → PID
+     */
     private array $pendingPids = [];
 
     public function __construct(private readonly string $docsDir) {}
@@ -59,14 +65,33 @@ final class DocumentStore
                 $this->writeSync($nodeId, $docId, $text, $metadata);
                 exit(0);
             } else {
-                // Parent: record PID and return.
-                $this->pendingPids[] = $pid;
+                // Parent: record PID keyed by nodeId and return.
+                $this->pendingPids[$nodeId] = $pid;
                 return;
             }
         }
 
         // Synchronous path (no fork or fork failed).
         $this->writeSync($nodeId, $docId, $text, $metadata);
+    }
+
+    /**
+     * Block until the async write for a specific node has completed.
+     *
+     * Use this before deleting a node's file so a late child write cannot
+     * recreate {nodeId}.bin after the unlink().
+     */
+    public function waitForNode(int $nodeId): void
+    {
+        if (!isset($this->pendingPids[$nodeId])) {
+            return;
+        }
+
+        if (function_exists('pcntl_waitpid')) {
+            pcntl_waitpid($this->pendingPids[$nodeId], $status);
+        }
+
+        unset($this->pendingPids[$nodeId]);
     }
 
     /**

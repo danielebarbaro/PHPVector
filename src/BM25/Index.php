@@ -38,6 +38,13 @@ final class Index
     /** @var array<int, Document> nodeId → Document */
     private array $documents = [];
 
+    /**
+     * Per-document term list (unique terms only).
+     * Enables O(|terms in doc|) deletion instead of O(|vocabulary|).
+     * @var array<int, string[]>
+     */
+    private array $docTerms = [];
+
     public function __construct(
         private readonly Config $config = new Config(),
         private readonly TokenizerInterface $tokenizer = new SimpleTokenizer(),
@@ -73,6 +80,9 @@ final class Index
         foreach ($termFreqs as $term => $tf) {
             $this->invertedIndex[$term][$nodeId] = $tf;
         }
+
+        // Track which terms this document contributed so removal is O(|terms in doc|).
+        $this->docTerms[$nodeId] = array_keys($termFreqs);
     }
 
     /**
@@ -192,6 +202,39 @@ final class Index
         return count($this->documents);
     }
 
+    /**
+     * Remove a document from the index.
+     *
+     * @param int $nodeId Internal node-ID of the document to remove.
+     * @return bool True if the document was removed, false if it didn't exist.
+     */
+    public function removeDocument(int $nodeId): bool
+    {
+        if (!isset($this->documents[$nodeId])) {
+            return false;
+        }
+
+        // Update totalTokens.
+        if (isset($this->docLengths[$nodeId])) {
+            $this->totalTokens -= $this->docLengths[$nodeId];
+            unset($this->docLengths[$nodeId]);
+        }
+
+        // Remove from inverted index — only touch terms this document contained.
+        foreach ($this->docTerms[$nodeId] ?? [] as $term) {
+            unset($this->invertedIndex[$term][$nodeId]);
+            // Remove empty posting lists to save memory.
+            if (empty($this->invertedIndex[$term])) {
+                unset($this->invertedIndex[$term]);
+            }
+        }
+        unset($this->docTerms[$nodeId]);
+
+        unset($this->documents[$nodeId]);
+
+        return true;
+    }
+
     /** Vocabulary size (unique terms in the index). */
     public function vocabularySize(): int
     {
@@ -204,7 +247,8 @@ final class Index
      * @return array{
      *   totalTokens: int,
      *   docLengths: array<int, int>,
-     *   invertedIndex: array<string, array<int, int>>
+     *   invertedIndex: array<string, array<int, int>>,
+     *   docTerms: array<int, string[]>
      * }
      */
     public function exportState(): array
@@ -213,6 +257,7 @@ final class Index
             'totalTokens'   => $this->totalTokens,
             'docLengths'    => $this->docLengths,
             'invertedIndex' => $this->invertedIndex,
+            'docTerms'      => $this->docTerms,
         ];
     }
 
@@ -223,7 +268,8 @@ final class Index
      * @param array{
      *   totalTokens: int,
      *   docLengths: array<int, int>,
-     *   invertedIndex: array<string, array<int, int>>
+     *   invertedIndex: array<string, array<int, int>>,
+     *   docTerms?: array<int, string[]>
      * } $state
      * @param array<int, Document> $documents  nodeId → Document (from HNSW index)
      */
@@ -233,5 +279,18 @@ final class Index
         $this->docLengths    = $state['docLengths'];
         $this->invertedIndex = $state['invertedIndex'];
         $this->documents     = $documents;
+
+        // Rebuild docTerms from the inverted index when loading older snapshots
+        // that were persisted before this field was introduced.
+        if (isset($state['docTerms'])) {
+            $this->docTerms = $state['docTerms'];
+        } else {
+            $this->docTerms = [];
+            foreach ($this->invertedIndex as $term => $postings) {
+                foreach (array_keys($postings) as $nId) {
+                    $this->docTerms[$nId][] = $term;
+                }
+            }
+        }
     }
 }
