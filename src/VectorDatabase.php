@@ -173,7 +173,9 @@ final class VectorDatabase
      * The document is soft-deleted from HNSW (excluded from results but kept
      * for graph connectivity) and fully removed from the BM25 index.
      *
-     * When persistence is enabled, the document file is also deleted from disk.
+     * When persistence is enabled, a tombstone marker is written immediately so
+     * the deletion survives a crash.  The physical doc file is removed during
+     * the next `save()` call, after the indexes are fully updated on disk.
      * Call `save()` afterward to persist the updated index state.
      *
      * @param string|int $id The document ID to delete.
@@ -202,22 +204,24 @@ final class VectorDatabase
         unset($this->nodeIdToDoc[$nodeId]);
         unset($this->docIdToNodeId[$id]);
 
-        // Delete document file from disk if persistence is enabled.
+        // Mark the document for physical deletion when persistence is enabled.
         if ($this->path !== null) {
             // An async pcntl_fork child may still be writing {nodeId}.bin.
-            // Wait for that specific write to finish before unlinking so the
-            // child cannot recreate the file after we delete it.
+            // Wait for it to finish so the file is fully on disk before we
+            // record the tombstone — this keeps the pair (bin + tombstone)
+            // consistent from the moment the tombstone is created.
             $this->getDocumentStore()->waitForNode($nodeId);
 
-            $docFile = $this->path . '/docs/' . $nodeId . '.bin';
-            if (file_exists($docFile)) {
-                // Suppress PHP warning and handle failure explicitly to keep
-                // on-disk state consistent with in-memory indexes.
-                if (!@unlink($docFile) && file_exists($docFile)) {
-                    throw new \RuntimeException(
-                        "Failed to delete persisted document file: {$docFile}"
-                    );
-                }
+            // Write a tombstone instead of immediately removing the doc file.
+            // The physical removal happens in save() AFTER the index files have
+            // been updated, giving us crash-safety:
+            //   • crash before save()  → open() finds the tombstone and
+            //                            re-applies the deletion in memory.
+            //   • crash during save()  → at worst the doc file is an orphan;
+            //                            the indexes already reflect the deletion.
+            $tombstone = $this->path . '/docs/' . $nodeId . '.tombstone';
+            if (file_put_contents($tombstone, '') === false) {
+                throw new \RuntimeException("Failed to write tombstone file: {$tombstone}");
             }
         }
 
@@ -359,9 +363,11 @@ final class VectorDatabase
      *  2. `meta.json`   — distance code, dimension, nextId, docIdToNodeId.
      *  3. `hnsw.bin`    — HNSW graph (vectors + connections).
      *  4. `bm25.bin`    — BM25 inverted index.
+     *  5. Removes `docs/{n}.bin` + `docs/{n}.tombstone` for every pending deletion.
      *
      * Individual `docs/{n}.bin` files are written incrementally by `addDocument()`
-     * and are NOT re-written by this method.
+     * and are NOT re-written by this method.  Deletion of doc files is deferred
+     * to this method so the on-disk state is always consistent.
      *
      * @throws \RuntimeException if no path was configured or on I/O failure.
      */
@@ -403,6 +409,18 @@ final class VectorDatabase
         $serializer = new IndexSerializer();
         $serializer->writeHnsw($this->path . '/hnsw.bin', $hnswState);
         $serializer->writeBm25($this->path . '/bm25.bin', $this->bm25Index->exportState());
+
+        // Now that all index files reflect the current state, it is safe to
+        // physically remove doc files for pending tombstone deletions.
+        $docsDir = $this->path . '/docs';
+        foreach (glob($docsDir . '/*.tombstone') ?: [] as $tombstoneFile) {
+            $nodeId  = (int) basename($tombstoneFile, '.tombstone');
+            $binFile = $docsDir . '/' . $nodeId . '.bin';
+            if (file_exists($binFile)) {
+                @unlink($binFile);
+            }
+            @unlink($tombstoneFile);
+        }
     }
 
     /**
@@ -488,6 +506,32 @@ final class VectorDatabase
         $db->bm25Index->importState($bm25Data, $bm25Stubs);
 
         // $db->nodeIdToDoc intentionally starts EMPTY — documents are lazy-loaded.
+
+        // ── Reconcile crash-interrupted deletions ─────────────────────────
+        // A tombstone file docs/{nodeId}.tombstone is written by deleteDocument()
+        // before save() is called.  If the process crashed between those two
+        // steps the tombstone survives but the indexes were not yet updated.
+        // Re-apply the pending deletion now so the loaded state is consistent.
+        $docsDir = $path . '/docs';
+        if (is_dir($docsDir)) {
+            foreach (glob($docsDir . '/*.tombstone') ?: [] as $tombstoneFile) {
+                $nodeId = (int) basename($tombstoneFile, '.tombstone');
+
+                // Apply the deletion only when the node is still present in the
+                // loaded indexes (i.e., save() had not yet been called).
+                if (isset($nodeIdToDocId[$nodeId])) {
+                    $docId = $nodeIdToDocId[$nodeId];
+                    $db->hnswIndex->delete($nodeId);
+                    $db->bm25Index->removeDocument($nodeId);
+                    unset($db->docIdToNodeId[$docId]);
+                }
+
+                // Always clean up — covers the edge case where the process
+                // crashed after indexes were written but before file removal.
+                @unlink($docsDir . '/' . $nodeId . '.bin');
+                @unlink($tombstoneFile);
+            }
+        }
 
         return $db;
     }
