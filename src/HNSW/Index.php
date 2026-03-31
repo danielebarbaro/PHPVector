@@ -204,11 +204,17 @@ final class Index
         // beam width, ramping up to the configured maximum as the index grows.
         // This avoids wasting cycles searching a sparse graph while preserving
         // full recall quality at scale.
-        $efC = max($this->config->M, min($this->config->efConstruction, (int) ($nodeId / 10)));
-
         for ($lc = min($this->maxLayer, $maxLayer); $lc >= 0; $lc--) {
             $mMax = $lc === 0 ? $this->config->M0 : $this->config->M;
 
+            // Compute adaptive efConstruction per-layer, ensuring it is at least
+            // the maximum desired degree for this layer (mMax). This guarantees
+            // that searchLayer() can return enough candidates to fill M0 on the
+            // base layer and M on upper layers, even during early inserts.
+            $efC = max(
+                $mMax,
+                min($this->config->efConstruction, (int) ($nodeId / 10))
+            );
             // Find efConstruction nearest neighbours at this layer.
             $W = $this->searchLayer($dv, [[$epDist, $ep]], $efC, $lc);
 
