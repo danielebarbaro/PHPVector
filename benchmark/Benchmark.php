@@ -377,7 +377,9 @@ final class Benchmark
         $this->log("  Benchmarking save/open...\n");
 
         $tmpDir = sys_get_temp_dir() . '/phpvbench_' . uniqid('', true);
-        mkdir($tmpDir, 0755, true);
+        if (!is_dir($tmpDir) && !mkdir($tmpDir, 0755, true) && !is_dir($tmpDir)) {
+            throw new \RuntimeException(sprintf('Failed to create temporary benchmark directory "%s".', $tmpDir));
+        }
 
         // Save
         $saveMeasurement = $this->measure(function () use ($documents, $tmpDir): void {
@@ -426,15 +428,15 @@ final class Benchmark
     private function buildSearchMetrics(array $measurement): array
     {
         $latencies = $measurement['latencies_ms'];
-        $count = count($latencies);
+        sort($latencies, SORT_NUMERIC);
 
         return [
             'operations' => $this->queries,
             'total_time_s' => $measurement['elapsed_seconds'],
             'qps' => $this->queries / $measurement['elapsed_seconds'],
-            'latency_p50_ms' => $latencies[(int) ($count * 0.50)],
-            'latency_p95_ms' => $latencies[(int) ($count * 0.95)],
-            'latency_p99_ms' => $latencies[(int) ($count * 0.99)],
+            'latency_p50_ms' => Stats::percentile($latencies, 50.0),
+            'latency_p95_ms' => Stats::percentile($latencies, 95.0),
+            'latency_p99_ms' => Stats::percentile($latencies, 99.0),
             'memory_delta_mb' => $measurement['memory_delta_mb'],
             'memory_current_mb' => $measurement['memory_current_mb'],
         ];
