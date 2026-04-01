@@ -70,29 +70,31 @@ final class IndexSerializer
 
         $fh = fopen($path, 'wb');
         if ($fh === false) {
-            throw new \RuntimeException("Failed to open hnsw.bin for writing: {$path}");
+            throw new \RuntimeException("Failed to open file for writing: {$path}");
         }
 
-        fwrite($fh, self::HNSW_MAGIC);
-        fwrite($fh, pack('C', self::VERSION));
-        fwrite($fh, pack('NNNN', $dim, $nodeCount, $ep, (int) $state['maxLayer']));
+        try {
+            $this->checkedWrite($fh, self::HNSW_MAGIC);
+            $this->checkedWrite($fh, pack('C', self::VERSION));
+            $this->checkedWrite($fh, pack('NNNN', $dim, $nodeCount, $ep, (int) $state['maxLayer']));
 
-        foreach ($nodes as $nodeId => $node) {
-            fwrite($fh, pack('NN', $nodeId, $node['maxLayer']));
-            if ($dim > 0) {
-                fwrite($fh, pack('d*', ...$node['vector']));
-            }
-            for ($l = 0; $l <= $node['maxLayer']; $l++) {
-                $conns = $node['connections'][$l] ?? [];
-                $cnt   = count($conns);
-                fwrite($fh, pack('N', $cnt));
-                if ($cnt > 0) {
-                    fwrite($fh, pack('N*', ...$conns));
+            foreach ($nodes as $nodeId => $node) {
+                $this->checkedWrite($fh, pack('NN', $nodeId, $node['maxLayer']));
+                if ($dim > 0) {
+                    $this->checkedWrite($fh, pack('d*', ...$node['vector']));
+                }
+                for ($l = 0; $l <= $node['maxLayer']; $l++) {
+                    $conns = $node['connections'][$l] ?? [];
+                    $cnt   = count($conns);
+                    $this->checkedWrite($fh, pack('N', $cnt));
+                    if ($cnt > 0) {
+                        $this->checkedWrite($fh, pack('N*', ...$conns));
+                    }
                 }
             }
+        } finally {
+            fclose($fh);
         }
-
-        fclose($fh);
     }
 
     /**
@@ -192,31 +194,33 @@ final class IndexSerializer
     {
         $fh = fopen($path, 'wb');
         if ($fh === false) {
-            throw new \RuntimeException("Failed to open bm25.bin for writing: {$path}");
+            throw new \RuntimeException("Failed to open file for writing: {$path}");
         }
 
-        fwrite($fh, self::BM25_MAGIC);
-        fwrite($fh, pack('C', self::VERSION));
-        fwrite($fh, pack('N', $state['totalTokens']));
+        try {
+            $this->checkedWrite($fh, self::BM25_MAGIC);
+            $this->checkedWrite($fh, pack('C', self::VERSION));
+            $this->checkedWrite($fh, pack('N', $state['totalTokens']));
 
-        $docLengths = $state['docLengths'];
-        fwrite($fh, pack('N', count($docLengths)));
-        foreach ($docLengths as $nodeId => $length) {
-            fwrite($fh, pack('NN', $nodeId, $length));
-        }
-
-        $invertedIndex = $state['invertedIndex'];
-        fwrite($fh, pack('N', count($invertedIndex)));
-        foreach ($invertedIndex as $term => $postings) {
-            $termBytes = (string) $term;
-            fwrite($fh, pack('n', strlen($termBytes)) . $termBytes);
-            fwrite($fh, pack('N', count($postings)));
-            foreach ($postings as $postNodeId => $tf) {
-                fwrite($fh, pack('NN', $postNodeId, $tf));
+            $docLengths = $state['docLengths'];
+            $this->checkedWrite($fh, pack('N', count($docLengths)));
+            foreach ($docLengths as $nodeId => $length) {
+                $this->checkedWrite($fh, pack('NN', $nodeId, $length));
             }
-        }
 
-        fclose($fh);
+            $invertedIndex = $state['invertedIndex'];
+            $this->checkedWrite($fh, pack('N', count($invertedIndex)));
+            foreach ($invertedIndex as $term => $postings) {
+                $termBytes = (string) $term;
+                $this->checkedWrite($fh, pack('n', strlen($termBytes)) . $termBytes);
+                $this->checkedWrite($fh, pack('N', count($postings)));
+                foreach ($postings as $postNodeId => $tf) {
+                    $this->checkedWrite($fh, pack('NN', $postNodeId, $tf));
+                }
+            }
+        } finally {
+            fclose($fh);
+        }
     }
 
     /**
@@ -289,5 +293,18 @@ final class IndexSerializer
             'docLengths'    => $docLengths,
             'invertedIndex' => $invertedIndex,
         ];
+    }
+
+    /**
+     * @param resource $fh
+     */
+    private function checkedWrite($fh, string $data): void
+    {
+        $len = strlen($data);
+        $written = fwrite($fh, $data);
+
+        if ($written !== $len) {
+            throw new \RuntimeException("Failed to write {$len} bytes (wrote " . ($written === false ? '0' : $written) . ')');
+        }
     }
 }
