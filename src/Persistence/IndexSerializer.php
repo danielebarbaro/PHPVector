@@ -300,11 +300,8 @@ final class IndexSerializer
      */
     private function checkedWrite($fh, string $data): void
     {
-        $len = strlen($data);
-        $written = fwrite($fh, $data);
-
-        if ($written !== $len) {
-            throw new \RuntimeException("Failed to write {$len} bytes (wrote " . ($written === false ? '0' : $written) . ')');
+        if (@fwrite($fh, $data) === false) {
+            throw new \RuntimeException("Failed to write data");
         }
     }
 }
