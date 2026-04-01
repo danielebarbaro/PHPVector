@@ -198,11 +198,25 @@ final class Index
         }
 
         // Phase 2: from min(L, l) down to layer 0 — build connections.
+        //
+        // Adaptive efConstruction: scale with graph size so early inserts
+        // (where the graph is small and fewer candidates exist) use a lower
+        // beam width, ramping up to the configured maximum as the index grows.
+        // This avoids wasting cycles searching a sparse graph while preserving
+        // full recall quality at scale.
         for ($lc = min($this->maxLayer, $maxLayer); $lc >= 0; $lc--) {
             $mMax = $lc === 0 ? $this->config->M0 : $this->config->M;
 
-            // Find ef_construction nearest neighbours at this layer.
-            $W = $this->searchLayer($dv, [[$epDist, $ep]], $this->config->efConstruction, $lc);
+            // Compute adaptive efConstruction per-layer, ensuring it is at least
+            // the maximum desired degree for this layer (mMax). This guarantees
+            // that searchLayer() can return enough candidates to fill M0 on the
+            // base layer and M on upper layers, even during early inserts.
+            $efC = max(
+                $mMax,
+                min($this->config->efConstruction, (int) ($nodeId / 10))
+            );
+            // Find efConstruction nearest neighbours at this layer.
+            $W = $this->searchLayer($dv, [[$epDist, $ep]], $efC, $lc);
 
             // Select the best M neighbours using simple or heuristic strategy.
             $neighbours = $this->config->useHeuristic

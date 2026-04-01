@@ -82,12 +82,14 @@ final class Config
         if ($M < 2) {
             throw new \InvalidArgumentException('M must be at least 2.');
         }
-        if ($efConstruction < $M) {
-            throw new \InvalidArgumentException('efConstruction must be ≥ M.');
+        $resolvedM0 = $M0 ?? ($M * 2);
+
+        if ($efConstruction < $resolvedM0) {
+            throw new \InvalidArgumentException("efConstruction must be ≥ M0 ({$resolvedM0}).");
         }
 
         $this->M = $M;
-        $this->M0 = $M0 ?? ($M * 2);
+        $this->M0 = $resolvedM0;
         $this->mL = $mL ?? (1.0 / log($M));
         $this->efConstruction = $efConstruction;
         $this->efSearch = $efSearch;

@@ -50,6 +50,10 @@ final class IndexSerializer
     /**
      * Write the HNSW graph state to $path.
      *
+     * Uses streaming fwrite() instead of buffer concatenation to avoid
+     * O(n²) memory copies. Each pack() result is written directly to
+     * disk, producing the same binary format with O(n) cost.
+     *
      * @param array{
      *   entryPoint: int|null,
      *   maxLayer: int,
@@ -64,27 +68,32 @@ final class IndexSerializer
         $nodeCount = count($nodes);
         $ep        = $state['entryPoint'] ?? self::NULL_ENTRY_POINT;
 
-        $buf  = self::HNSW_MAGIC;
-        $buf .= pack('C', self::VERSION);
-        $buf .= pack('NNNN', $dim, $nodeCount, $ep, (int) $state['maxLayer']);
-
-        foreach ($nodes as $nodeId => $node) {
-            $buf .= pack('NN', $nodeId, $node['maxLayer']);
-            if ($dim > 0) {
-                $buf .= pack('d*', ...$node['vector']);
-            }
-            for ($l = 0; $l <= $node['maxLayer']; $l++) {
-                $conns = $node['connections'][$l] ?? [];
-                $cnt   = count($conns);
-                $buf  .= pack('N', $cnt);
-                if ($cnt > 0) {
-                    $buf .= pack('N*', ...$conns);
-                }
-            }
+        $fh = fopen($path, 'wb');
+        if ($fh === false) {
+            throw new \RuntimeException("Failed to open file for writing: {$path}");
         }
 
-        if (file_put_contents($path, $buf) === false) {
-            throw new \RuntimeException("Failed to write hnsw.bin: {$path}");
+        try {
+            $this->checkedWrite($fh, self::HNSW_MAGIC);
+            $this->checkedWrite($fh, pack('C', self::VERSION));
+            $this->checkedWrite($fh, pack('NNNN', $dim, $nodeCount, $ep, (int) $state['maxLayer']));
+
+            foreach ($nodes as $nodeId => $node) {
+                $this->checkedWrite($fh, pack('NN', $nodeId, $node['maxLayer']));
+                if ($dim > 0) {
+                    $this->checkedWrite($fh, pack('d*', ...$node['vector']));
+                }
+                for ($l = 0; $l <= $node['maxLayer']; $l++) {
+                    $conns = $node['connections'][$l] ?? [];
+                    $cnt   = count($conns);
+                    $this->checkedWrite($fh, pack('N', $cnt));
+                    if ($cnt > 0) {
+                        $this->checkedWrite($fh, pack('N*', ...$conns));
+                    }
+                }
+            }
+        } finally {
+            fclose($fh);
         }
     }
 
@@ -173,6 +182,8 @@ final class IndexSerializer
     /**
      * Write the BM25 inverted index to $path.
      *
+     * Streams directly to disk
+     *
      * @param array{
      *   totalTokens: int,
      *   docLengths: array<int, int>,
@@ -181,29 +192,34 @@ final class IndexSerializer
      */
     public function writeBm25(string $path, array $state): void
     {
-        $buf  = self::BM25_MAGIC;
-        $buf .= pack('C', self::VERSION);
-        $buf .= pack('N', $state['totalTokens']);
-
-        $docLengths = $state['docLengths'];
-        $buf .= pack('N', count($docLengths));
-        foreach ($docLengths as $nodeId => $length) {
-            $buf .= pack('NN', $nodeId, $length);
+        $fh = fopen($path, 'wb');
+        if ($fh === false) {
+            throw new \RuntimeException("Failed to open file for writing: {$path}");
         }
 
-        $invertedIndex = $state['invertedIndex'];
-        $buf .= pack('N', count($invertedIndex));
-        foreach ($invertedIndex as $term => $postings) {
-            $termBytes = (string) $term;
-            $buf .= pack('n', strlen($termBytes)) . $termBytes;
-            $buf .= pack('N', count($postings));
-            foreach ($postings as $postNodeId => $tf) {
-                $buf .= pack('NN', $postNodeId, $tf);
+        try {
+            $this->checkedWrite($fh, self::BM25_MAGIC);
+            $this->checkedWrite($fh, pack('C', self::VERSION));
+            $this->checkedWrite($fh, pack('N', $state['totalTokens']));
+
+            $docLengths = $state['docLengths'];
+            $this->checkedWrite($fh, pack('N', count($docLengths)));
+            foreach ($docLengths as $nodeId => $length) {
+                $this->checkedWrite($fh, pack('NN', $nodeId, $length));
             }
-        }
 
-        if (file_put_contents($path, $buf) === false) {
-            throw new \RuntimeException("Failed to write bm25.bin: {$path}");
+            $invertedIndex = $state['invertedIndex'];
+            $this->checkedWrite($fh, pack('N', count($invertedIndex)));
+            foreach ($invertedIndex as $term => $postings) {
+                $termBytes = (string) $term;
+                $this->checkedWrite($fh, pack('n', strlen($termBytes)) . $termBytes);
+                $this->checkedWrite($fh, pack('N', count($postings)));
+                foreach ($postings as $postNodeId => $tf) {
+                    $this->checkedWrite($fh, pack('NN', $postNodeId, $tf));
+                }
+            }
+        } finally {
+            fclose($fh);
         }
     }
 
@@ -277,5 +293,15 @@ final class IndexSerializer
             'docLengths'    => $docLengths,
             'invertedIndex' => $invertedIndex,
         ];
+    }
+
+    /**
+     * @param resource $fh
+     */
+    private function checkedWrite($fh, string $data): void
+    {
+        if (@fwrite($fh, $data) === false) {
+            throw new \RuntimeException("Failed to write data");
+        }
     }
 }
