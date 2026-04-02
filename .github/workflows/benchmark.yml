@@ -146,17 +146,18 @@ jobs:
           alert-threshold: '150%'
           fail-on-alert: false
 
-      - name: Copy latest results for baseline
+      - name: Commit baseline to gh-pages
         run: |
-          mkdir -p docs/benchmark
-          cp benchmark-results.json docs/benchmark/latest.json
-
-      - name: Commit baseline
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "Update benchmark baseline"
-          file_pattern: docs/benchmark/latest.json
-          branch: gh-pages
+          git fetch origin gh-pages --depth=1 2>/dev/null || true
+          git worktree add /tmp/gh-pages gh-pages 2>/dev/null || git worktree add /tmp/gh-pages -b gh-pages
+          mkdir -p /tmp/gh-pages/docs/benchmark
+          cp benchmark-results.json /tmp/gh-pages/docs/benchmark/latest.json
+          cd /tmp/gh-pages
+          git add docs/benchmark/latest.json
+          git diff --cached --quiet || git commit -m "Update benchmark baseline"
+          git push origin gh-pages || true
+          cd -
+          git worktree remove /tmp/gh-pages
 
       - name: Upload benchmark artifact
         uses: actions/upload-artifact@v5
