@@ -69,7 +69,7 @@ final class BenchmarkComparator
             }
         }
 
-        return self::buildMarkdown($rows, $worstStatus);
+        return self::buildMarkdown($rows, $worstStatus, $warningThreshold);
     }
 
     /**
@@ -83,7 +83,7 @@ final class BenchmarkComparator
         $curVal = $cur['value'];
         $unit = $cur['unit'];
 
-        if ($baseVal == 0.0) {
+        if ($baseVal === 0.0) {
             return [
                 'name' => $cur['name'],
                 'baseline' => self::formatValue($baseVal, $unit),
@@ -125,15 +125,11 @@ final class BenchmarkComparator
 
     private static function isSmallerBetter(string $unit): bool
     {
-        return $unit === 'MB';
+        return !str_contains($unit, '/');
     }
 
     private static function formatValue(float $value, string $unit): string
     {
-        if (str_contains($unit, '/')) {
-            return number_format($value, 2);
-        }
-
         return number_format($value, 2);
     }
 
@@ -147,11 +143,11 @@ final class BenchmarkComparator
     /**
      * @param array<int, array{name: string, baseline: string, current: string, delta: string, emoji: string, status: string}> $rows
      */
-    private static function buildMarkdown(array $rows, string $worstStatus): string
+    private static function buildMarkdown(array $rows, string $worstStatus, float $threshold): string
     {
         $summary = match ($worstStatus) {
-            'red' => 'Significant regressions detected (>5%)',
-            'orange' => 'Minor regressions detected (within 5%)',
+            'red' => sprintf('Significant regressions detected (>%.0f%%)', $threshold),
+            'orange' => sprintf('Minor regressions detected (within %.0f%%)', $threshold),
             default => 'All benchmarks passed',
         };
 

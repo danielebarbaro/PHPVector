@@ -179,4 +179,20 @@ final class BenchmarkComparatorTest extends TestCase
         self::assertStringContainsString('| Metric | Baseline | Current | Delta | Status |', $result);
         self::assertStringContainsString('## Benchmark Comparison', $result);
     }
+
+    public function testRemovedMetric(): void
+    {
+        $baseline = [
+            ['name' => 'insert (ops/s)', 'unit' => 'ops/s', 'value' => 10000],
+            ['name' => 'old_metric (QPS)', 'unit' => 'queries/s', 'value' => 5000],
+        ];
+        $current = [
+            ['name' => 'insert (ops/s)', 'unit' => 'ops/s', 'value' => 10000],
+        ];
+
+        $result = BenchmarkComparator::compare($baseline, $current);
+
+        self::assertStringContainsString('old_metric (QPS)', $result);
+        self::assertStringContainsString('removed', $result);
+    }
 }
