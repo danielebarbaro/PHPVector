@@ -133,6 +133,23 @@ final class BenchmarkComparatorTest extends TestCase
         self::assertStringNotContainsString('NAN', $result);
     }
 
+    public function testBaselineIntegerZeroFromJson(): void
+    {
+        // JSON decodes 0 as int(0), not float(0.0)
+        $baseline = [
+            ['name' => 'insert (ops/s)', 'unit' => 'ops/s', 'value' => 0],
+        ];
+        $current = [
+            ['name' => 'insert (ops/s)', 'unit' => 'ops/s', 'value' => 10000],
+        ];
+
+        $result = BenchmarkComparator::compare($baseline, $current);
+
+        self::assertStringNotContainsString('INF', $result);
+        self::assertStringNotContainsString('NAN', $result);
+        self::assertStringContainsString('N/A', $result);
+    }
+
     public function testNewMetricInCurrent(): void
     {
         $baseline = [

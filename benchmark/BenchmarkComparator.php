@@ -83,7 +83,7 @@ final class BenchmarkComparator
         $curVal = $cur['value'];
         $unit = $cur['unit'];
 
-        if ($baseVal === 0.0) {
+        if ($baseVal == 0) {
             return [
                 'name' => $cur['name'],
                 'baseline' => self::formatValue($baseVal, $unit),
