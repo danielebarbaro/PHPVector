@@ -9,7 +9,6 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  deployments: write
 
 concurrency:
   group: benchmark-${{ github.ref }}
@@ -22,7 +21,7 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────────
-  # PR Benchmark: Compare PR against base branch
+  # PR Benchmark: Compare PR against baseline from gh-pages
   # ─────────────────────────────────────────────────────────────────────────────
   benchmark-pr:
     if: github.event_name == 'pull_request'
@@ -32,14 +31,6 @@ jobs:
     steps:
       - name: Checkout PR branch
         uses: actions/checkout@v5
-        with:
-          path: pr
-
-      - name: Checkout base branch
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ github.base_ref }}
-          path: base
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -48,64 +39,61 @@ jobs:
           coverage: none
           ini-values: memory_limit=2G
 
-      - name: Cache Composer packages (PR)
+      - name: Cache Composer packages
         uses: actions/cache@v5
         with:
-          path: pr/vendor
-          key: ${{ runner.os }}-php-${{ hashFiles('pr/**/composer.lock') }}
-
-      - name: Cache Composer packages (base)
-        uses: actions/cache@v5
-        with:
-          path: base/vendor
-          key: ${{ runner.os }}-php-${{ hashFiles('base/**/composer.lock') }}
+          path: vendor
+          key: ${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
 
       - name: Install dependencies
-        run: |
-          composer install --prefer-dist --no-progress --no-dev --working-dir=pr
-          composer install --prefer-dist --no-progress --no-dev --working-dir=base
+        run: composer install --prefer-dist --no-progress --no-dev
 
-      - name: Run benchmark on base branch
-        id: base-bench
+      - name: Detect benchmark profile
+        id: profile
         run: |
-          php base/benchmark/run.php \
-            --profile=ci \
-            --scenarios=small \
-            --documents=${{ env.BENCHMARK_DOCS }} \
-            --dimensions=${{ env.BENCHMARK_DIMS }} \
-            --github-bench=base-benchmark.json
-        continue-on-error: true
+          SCENARIOS="xs,small"
+          if ${{ contains(github.event.pull_request.labels.*.name, 'benchmark-full') }}; then
+            SCENARIOS="xs,small,medium,large,highdim"
+          fi
+          echo "scenarios=$SCENARIOS" >> "$GITHUB_OUTPUT"
 
-      - name: Run benchmark on PR branch
+      - name: Run benchmark
         run: |
-          php pr/benchmark/run.php \
+          php benchmark/run.php \
             --profile=ci \
-            --scenarios=small \
+            --scenarios=${{ steps.profile.outputs.scenarios }} \
             --documents=${{ env.BENCHMARK_DOCS }} \
             --dimensions=${{ env.BENCHMARK_DIMS }} \
             --github-bench=pr-benchmark.json
 
+      - name: Fetch baseline from gh-pages
+        run: |
+          git fetch origin gh-pages --depth=1 2>/dev/null || true
+          git show origin/gh-pages:docs/benchmark/latest.json > baseline.json 2>/dev/null || echo "[]" > baseline.json
+
       - name: Compare benchmarks
-        if: steps.base-bench.outcome == 'success'
-        uses: openpgpjs/github-action-pull-request-benchmark@v1
+        run: |
+          php benchmark/compare.php \
+            --baseline=baseline.json \
+            --current=pr-benchmark.json \
+            --output=comparison.md
+
+      - name: Post benchmark comparison
+        if: always()
+        uses: marocchino/sticky-pull-request-comment@v2
         with:
-          name: PHPVector Performance
-          tool: customBiggerIsBetter
-          pr-benchmark-file-path: pr-benchmark.json
-          base-benchmark-file-path: base-benchmark.json
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          comment-on-alert: true
-          alert-threshold: '90%'
-          fail-on-alert: false
-          fail-threshold: '80%'
+          header: benchmark
+          path: comparison.md
 
       - name: Upload benchmark artifacts
+        if: always()
         uses: actions/upload-artifact@v5
         with:
           name: benchmark-results-pr
           path: |
             pr-benchmark.json
-            base-benchmark.json
+            baseline.json
+            comparison.md
           retention-days: 14
 
   # ─────────────────────────────────────────────────────────────────────────────
@@ -157,6 +145,18 @@ jobs:
           comment-on-alert: true
           alert-threshold: '150%'
           fail-on-alert: false
+
+      - name: Copy latest results for baseline
+        run: |
+          mkdir -p docs/benchmark
+          cp benchmark-results.json docs/benchmark/latest.json
+
+      - name: Commit baseline
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Update benchmark baseline"
+          file_pattern: docs/benchmark/latest.json
+          branch: gh-pages
 
       - name: Upload benchmark artifact
         uses: actions/upload-artifact@v5
