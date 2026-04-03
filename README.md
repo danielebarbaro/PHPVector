@@ -373,10 +373,10 @@ Filter search results by document metadata. Filters can be combined with any sea
 
 ### Creating filters
 
-Use the `MetadataFilter` value object. All nine operators are supported:
+Use the `MetadataFilter` value object. All eleven operators are supported:
 
 ```php
-use PHPVector\MetadataFilter;
+use PHPVector\Metadata\MetadataFilter;
 
 // Equality / inequality
 $filter = MetadataFilter::eq('status', 'published');
@@ -394,6 +394,10 @@ $filter = MetadataFilter::notIn('status', ['deleted', 'archived']);
 
 // Array containment — checks if metadata array contains the value
 $filter = MetadataFilter::contains('tags', 'php');  // matches ['tags' => ['php', 'vector']]
+
+// Existence checks — does a metadata key exist (regardless of value)?
+$filter = MetadataFilter::exists('thumbnail');
+$filter = MetadataFilter::notExists('deleted_at');
 ```
 
 ### Filtering search results
@@ -401,7 +405,7 @@ $filter = MetadataFilter::contains('tags', 'php');  // matches ['tags' => ['php'
 Pass filters to any search method. Multiple filters are ANDed together by default.
 
 ```php
-use PHPVector\MetadataFilter;
+use PHPVector\Metadata\MetadataFilter;
 
 // Vector search with filters
 $results = $db->vectorSearch(
@@ -464,6 +468,11 @@ $results = $db->vectorSearch(
     filters: [MetadataFilter::eq('rare_tag', 'value')],
     overFetch: 10,
 );
+
+// Or set the default multiplier at construction time
+$db = new VectorDatabase(
+    overFetchMultiplier: 10,
+);
 ```
 
 > **Note:** Filtered queries may return fewer than `k` results if not enough documents match.
@@ -500,6 +509,8 @@ The `patchMetadata()` method:
 Query documents by metadata alone, without a vector or text query:
 
 ```php
+use PHPVector\Metadata\SortDirection;
+
 // Find all documents matching filters
 $results = $db->metadataSearch(
     filters: [MetadataFilter::eq('status', 'published')],
@@ -515,7 +526,7 @@ $results = $db->metadataSearch(
 $results = $db->metadataSearch(
     filters: [MetadataFilter::eq('status', 'published')],
     sortBy: 'created_at',
-    sortDirection: 'desc',  // 'asc' or 'desc'
+    sortDirection: SortDirection::Desc,
 );
 
 // Empty filters returns all documents
