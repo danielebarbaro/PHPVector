@@ -12,6 +12,7 @@ use PHPVector\HNSW\Config as HNSWConfig;
 use PHPVector\HNSW\Index as HNSWIndex;
 use PHPVector\Metadata\MetadataFilter;
 use PHPVector\Metadata\MetadataFilterEvaluator;
+use PHPVector\Metadata\SortDirection;
 use PHPVector\Persistence\DocumentStore;
 use PHPVector\Persistence\IndexSerializer;
 
@@ -466,23 +467,16 @@ final class VectorDatabase
      * @param array<MetadataFilter|array<MetadataFilter>> $filters       Metadata filters to apply (AND/OR groups).
      * @param int|null                                     $limit         Maximum number of results (null = all).
      * @param string|null                                  $sortBy        Metadata key to sort by (null = insertion order).
-     * @param string                                       $sortDirection Sort direction: 'asc' or 'desc'.
+     * @param SortDirection                                $sortDirection Sort direction.
      *
      * @return SearchResult[]
-     * @throws \InvalidArgumentException if $sortDirection is not 'asc' or 'desc'.
      */
     public function metadataSearch(
         array $filters = [],
         ?int $limit = null,
         ?string $sortBy = null,
-        string $sortDirection = 'asc',
+        SortDirection $sortDirection = SortDirection::Asc,
     ): array {
-        if ($sortDirection !== 'asc' && $sortDirection !== 'desc') {
-            throw new \InvalidArgumentException(
-                "Invalid sort direction: '$sortDirection'. Must be 'asc' or 'desc'."
-            );
-        }
-
         $evaluator = new MetadataFilterEvaluator();
         $matchingDocs = [];
 
@@ -516,7 +510,7 @@ final class VectorDatabase
 
                     $cmp = $aVal <=> $bVal;
 
-                    return $sortDirection === 'asc' ? $cmp : -$cmp;
+                    return $sortDirection === SortDirection::Asc ? $cmp : -$cmp;
                 }
             );
         }

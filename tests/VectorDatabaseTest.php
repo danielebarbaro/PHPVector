@@ -11,6 +11,7 @@ use PHPVector\Document;
 use PHPVector\HNSW\Config as HNSWConfig;
 use PHPVector\HybridMode;
 use PHPVector\Metadata\MetadataFilter;
+use PHPVector\Metadata\SortDirection;
 use PHPVector\SearchResult;
 use PHPVector\VectorDatabase;
 
@@ -1363,7 +1364,7 @@ final class VectorDatabaseTest extends TestCase
         $db->addDocument(new Document(id: 2, vector: [0.0, 1.0], metadata: ['priority' => 1]));
         $db->addDocument(new Document(id: 3, vector: [0.5, 0.5], metadata: ['priority' => 2]));
 
-        $results = $db->metadataSearch([], sortBy: 'priority', sortDirection: 'asc');
+        $results = $db->metadataSearch([], sortBy: 'priority', sortDirection: SortDirection::Asc);
 
         self::assertCount(3, $results);
         self::assertSame(2, $results[0]->document->id);
@@ -1378,7 +1379,7 @@ final class VectorDatabaseTest extends TestCase
         $db->addDocument(new Document(id: 2, vector: [0.0, 1.0], metadata: ['score' => 30]));
         $db->addDocument(new Document(id: 3, vector: [0.5, 0.5], metadata: ['score' => 20]));
 
-        $results = $db->metadataSearch([], sortBy: 'score', sortDirection: 'desc');
+        $results = $db->metadataSearch([], sortBy: 'score', sortDirection: SortDirection::Desc);
 
         self::assertCount(3, $results);
         self::assertSame(2, $results[0]->document->id);
@@ -1393,7 +1394,7 @@ final class VectorDatabaseTest extends TestCase
         $db->addDocument(new Document(id: 2, vector: [0.0, 1.0], metadata: ['name' => 'Alice']));
         $db->addDocument(new Document(id: 3, vector: [0.5, 0.5], metadata: ['name' => 'Bob']));
 
-        $results = $db->metadataSearch([], sortBy: 'name', sortDirection: 'asc');
+        $results = $db->metadataSearch([], sortBy: 'name', sortDirection: SortDirection::Asc);
 
         self::assertSame('Alice', $results[0]->document->metadata['name']);
         self::assertSame('Bob', $results[1]->document->metadata['name']);
@@ -1407,11 +1408,27 @@ final class VectorDatabaseTest extends TestCase
         $db->addDocument(new Document(id: 2, vector: [0.0, 1.0], metadata: ['other' => 'value']));
         $db->addDocument(new Document(id: 3, vector: [0.5, 0.5], metadata: ['priority' => 1]));
 
-        $results = $db->metadataSearch([], sortBy: 'priority', sortDirection: 'asc');
+        $results = $db->metadataSearch([], sortBy: 'priority', sortDirection: SortDirection::Asc);
 
         self::assertSame(3, $results[0]->document->id); // priority: 1
         self::assertSame(1, $results[1]->document->id); // priority: 2
         self::assertSame(2, $results[2]->document->id); // missing priority
+    }
+
+    public function testMetadataSearchAcceptsSortDirectionEnum(): void
+    {
+        $db = $this->makeDb();
+
+        $db->addDocument(new Document(id: 1, vector: [1.0, 0.0], metadata: ['priority' => 3]));
+        $db->addDocument(new Document(id: 2, vector: [0.9, 0.1], metadata: ['priority' => 1]));
+        $db->addDocument(new Document(id: 3, vector: [0.8, 0.2], metadata: ['priority' => 2]));
+
+        $results = $db->metadataSearch([], sortBy: 'priority', sortDirection: SortDirection::Desc);
+
+        self::assertCount(3, $results);
+        self::assertSame(3, $results[0]->document->metadata['priority']);
+        self::assertSame(2, $results[1]->document->metadata['priority']);
+        self::assertSame(1, $results[2]->document->metadata['priority']);
     }
 
     public function testMetadataSearchWithoutSortByReturnsInsertionOrder(): void
@@ -1438,17 +1455,6 @@ final class VectorDatabaseTest extends TestCase
         $results = $db->metadataSearch([]);
 
         self::assertCount(3, $results);
-    }
-
-    public function testMetadataSearchThrowsOnInvalidSortDirection(): void
-    {
-        $db = $this->makeDb();
-        $db->addDocument(new Document(id: 1, vector: [1.0, 0.0], metadata: ['key' => 'value']));
-
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage("Invalid sort direction: 'invalid'. Must be 'asc' or 'desc'.");
-
-        $db->metadataSearch([], sortDirection: 'invalid');
     }
 
     public function testMetadataSearchRanksStartAtOne(): void
@@ -1507,7 +1513,7 @@ final class VectorDatabaseTest extends TestCase
             [MetadataFilter::eq('type', 'item')],
             limit: 2,
             sortBy: 'price',
-            sortDirection: 'asc'
+            sortDirection: SortDirection::Asc
         );
 
         self::assertCount(2, $results);
