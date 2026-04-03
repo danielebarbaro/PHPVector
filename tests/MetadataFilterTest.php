@@ -6,7 +6,7 @@ namespace PHPVector\Tests;
 
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
-use PHPVector\MetadataFilter;
+use PHPVector\Metadata\MetadataFilter;
 
 final class MetadataFilterTest extends TestCase
 {
@@ -20,7 +20,7 @@ final class MetadataFilterTest extends TestCase
 
     public function testConstructorAcceptsAllValidOperators(): void
     {
-        $operators = ['=', '!=', '<', '<=', '>', '>=', 'in', 'not_in', 'contains'];
+        $operators = ['=', '!=', '<', '<=', '>', '>=', 'in', 'not_in', 'contains', 'exists', 'not_exists'];
 
         foreach ($operators as $operator) {
             $value = in_array($operator, ['in', 'not_in'], true) ? ['a'] : 'value';
@@ -167,5 +167,23 @@ final class MetadataFilterTest extends TestCase
     {
         $filter = new MetadataFilter('key', 'value');
         self::assertSame('=', $filter->operator);
+    }
+
+    public function testExistsFactoryMethod(): void
+    {
+        $filter = MetadataFilter::exists('category');
+
+        self::assertSame('category', $filter->key);
+        self::assertTrue($filter->value);
+        self::assertSame('exists', $filter->operator);
+    }
+
+    public function testNotExistsFactoryMethod(): void
+    {
+        $filter = MetadataFilter::notExists('category');
+
+        self::assertSame('category', $filter->key);
+        self::assertTrue($filter->value);
+        self::assertSame('not_exists', $filter->operator);
     }
 }

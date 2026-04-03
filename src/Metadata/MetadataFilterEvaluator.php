@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace PHPVector\Metadata;
 
 use PHPVector\Document;
-use PHPVector\MetadataFilter;
 
 /**
  * Evaluates whether a document's metadata matches a set of filters.
@@ -69,6 +68,13 @@ final class MetadataFilterEvaluator
     private function matchesSingleFilter(Document $document, MetadataFilter $filter): bool
     {
         $metadata = $document->metadata;
+
+        if ($filter->operator === 'exists') {
+            return array_key_exists($filter->key, $metadata);
+        }
+        if ($filter->operator === 'not_exists') {
+            return !array_key_exists($filter->key, $metadata);
+        }
 
         // Missing metadata key returns false
         if (!array_key_exists($filter->key, $metadata)) {

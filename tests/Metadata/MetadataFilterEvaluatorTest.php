@@ -8,7 +8,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use PHPVector\Document;
 use PHPVector\Metadata\MetadataFilterEvaluator;
-use PHPVector\MetadataFilter;
+use PHPVector\Metadata\MetadataFilter;
 
 final class MetadataFilterEvaluatorTest extends TestCase
 {
@@ -611,5 +611,69 @@ final class MetadataFilterEvaluatorTest extends TestCase
         $filters = [];
 
         $this->assertTrue($this->evaluator->matches($document, $filters));
+    }
+
+    // ===========================================
+    // Exists operator tests
+    // ===========================================
+
+    public function testExistsReturnsTrueWhenKeyPresent(): void
+    {
+        $document = new Document(metadata: ['category' => 'books']);
+        $filters = [MetadataFilter::exists('category')];
+        $this->assertTrue($this->evaluator->matches($document, $filters));
+    }
+
+    public function testExistsReturnsTrueWhenKeyPresentWithNullValue(): void
+    {
+        $document = new Document(metadata: ['category' => null]);
+        $filters = [MetadataFilter::exists('category')];
+        $this->assertTrue($this->evaluator->matches($document, $filters));
+    }
+
+    public function testExistsReturnsFalseWhenKeyMissing(): void
+    {
+        $document = new Document(metadata: ['name' => 'test']);
+        $filters = [MetadataFilter::exists('category')];
+        $this->assertFalse($this->evaluator->matches($document, $filters));
+    }
+
+    public function testExistsReturnsFalseOnEmptyMetadata(): void
+    {
+        $document = new Document(metadata: []);
+        $filters = [MetadataFilter::exists('category')];
+        $this->assertFalse($this->evaluator->matches($document, $filters));
+    }
+
+    // ===========================================
+    // Not Exists operator tests
+    // ===========================================
+
+    public function testNotExistsReturnsTrueWhenKeyMissing(): void
+    {
+        $document = new Document(metadata: ['name' => 'test']);
+        $filters = [MetadataFilter::notExists('category')];
+        $this->assertTrue($this->evaluator->matches($document, $filters));
+    }
+
+    public function testNotExistsReturnsTrueOnEmptyMetadata(): void
+    {
+        $document = new Document(metadata: []);
+        $filters = [MetadataFilter::notExists('category')];
+        $this->assertTrue($this->evaluator->matches($document, $filters));
+    }
+
+    public function testNotExistsReturnsFalseWhenKeyPresent(): void
+    {
+        $document = new Document(metadata: ['category' => 'books']);
+        $filters = [MetadataFilter::notExists('category')];
+        $this->assertFalse($this->evaluator->matches($document, $filters));
+    }
+
+    public function testNotExistsReturnsFalseWhenKeyPresentWithNullValue(): void
+    {
+        $document = new Document(metadata: ['category' => null]);
+        $filters = [MetadataFilter::notExists('category')];
+        $this->assertFalse($this->evaluator->matches($document, $filters));
     }
 }

@@ -10,7 +10,7 @@ use PHPVector\BM25\SimpleTokenizer;
 use PHPVector\Document;
 use PHPVector\HNSW\Config as HNSWConfig;
 use PHPVector\HybridMode;
-use PHPVector\MetadataFilter;
+use PHPVector\Metadata\MetadataFilter;
 use PHPVector\SearchResult;
 use PHPVector\VectorDatabase;
 

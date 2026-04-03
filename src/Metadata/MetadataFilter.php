@@ -2,13 +2,13 @@
 
 declare(strict_types=1);
 
-namespace PHPVector;
+namespace PHPVector\Metadata;
 
 use InvalidArgumentException;
 
 final class MetadataFilter
 {
-    private const VALID_OPERATORS = ['=', '!=', '<', '<=', '>', '>=', 'in', 'not_in', 'contains'];
+    private const VALID_OPERATORS = ['=', '!=', '<', '<=', '>', '>=', 'in', 'not_in', 'contains', 'exists', 'not_exists'];
 
     /**
      * @param string $key      Metadata field name to filter on.
@@ -86,5 +86,15 @@ final class MetadataFilter
     public static function contains(string $key, mixed $value): self
     {
         return new self($key, $value, 'contains');
+    }
+
+    public static function exists(string $key): self
+    {
+        return new self($key, true, 'exists');
+    }
+
+    public static function notExists(string $key): self
+    {
+        return new self($key, true, 'not_exists');
     }
 }

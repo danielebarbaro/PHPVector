@@ -10,6 +10,7 @@ use PHPVector\BM25\TokenizerInterface;
 use PHPVector\BM25\SimpleTokenizer;
 use PHPVector\HNSW\Config as HNSWConfig;
 use PHPVector\HNSW\Index as HNSWIndex;
+use PHPVector\Metadata\MetadataFilter;
 use PHPVector\Metadata\MetadataFilterEvaluator;
 use PHPVector\Persistence\DocumentStore;
 use PHPVector\Persistence\IndexSerializer;
