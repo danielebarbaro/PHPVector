@@ -101,7 +101,11 @@ final class VectorDatabase
         BM25Config $bm25Config = new BM25Config(),
         TokenizerInterface $tokenizer = new SimpleTokenizer(),
         private readonly ?string $path = null,
+        private readonly int $overFetchMultiplier = 5,
     ) {
+        if ($overFetchMultiplier < 1) {
+            throw new \InvalidArgumentException('overFetchMultiplier must be at least 1.');
+        }
         $this->hnswConfig = $hnswConfig;
         $this->hnswIndex  = new HNSWIndex($hnswConfig);
         $this->bm25Index  = new BM25Index($bm25Config, $tokenizer);
@@ -295,7 +299,7 @@ final class VectorDatabase
             }, $raw);
         }
 
-        $overFetch ??= $this->hnswConfig->overFetchMultiplier;
+        $overFetch ??= $this->overFetchMultiplier;
         $fetchK = $k * $overFetch;
 
         $raw = $this->hnswIndex->search($vector, $fetchK, $ef);
@@ -350,7 +354,7 @@ final class VectorDatabase
             return $this->buildSearchResults($topK);
         }
 
-        $overFetch ??= $this->hnswConfig->overFetchMultiplier;
+        $overFetch ??= $this->overFetchMultiplier;
         $fetchK = $k * $overFetch;
 
         $scores = $this->bm25Index->scoreAll($query);
@@ -424,7 +428,7 @@ final class VectorDatabase
             };
         }
 
-        $overFetch ??= $this->hnswConfig->overFetchMultiplier;
+        $overFetch ??= $this->overFetchMultiplier;
         $fusionK = $k * $overFetch;
         $fetchK ??= max($fusionK * 3, 50);
 
@@ -683,6 +687,7 @@ final class VectorDatabase
         HNSWConfig $hnswConfig = new HNSWConfig(),
         BM25Config $bm25Config = new BM25Config(),
         TokenizerInterface $tokenizer = new SimpleTokenizer(),
+        int $overFetchMultiplier = 5,
     ): self {
         $metaPath = $path . '/meta.json';
         if (!file_exists($metaPath)) {
@@ -702,7 +707,7 @@ final class VectorDatabase
             ));
         }
 
-        $db = new self($hnswConfig, $bm25Config, $tokenizer, $path);
+        $db = new self($hnswConfig, $bm25Config, $tokenizer, $path, $overFetchMultiplier);
         $db->nextId        = (int) $meta['nextId'];
         $db->docIdToNodeId = $meta['docIdToNodeId'];
 

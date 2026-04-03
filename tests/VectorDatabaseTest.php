@@ -561,10 +561,11 @@ final class VectorDatabaseTest extends TestCase
         self::assertSame(1, $results[0]->document->id);
     }
 
-    public function testVectorSearchUsesConfigOverFetchMultiplierByDefault(): void
+    public function testVectorSearchUsesOverFetchMultiplierFromConstructor(): void
     {
         $db = new VectorDatabase(
-            hnswConfig: new HNSWConfig(M: 8, efConstruction: 50, efSearch: 20, overFetchMultiplier: 2),
+            hnswConfig: new HNSWConfig(M: 8, efConstruction: 50, efSearch: 20),
+            overFetchMultiplier: 2,
         );
 
         // Add docs where only 2 match, but they're not the top results without filtering
@@ -763,10 +764,11 @@ final class VectorDatabaseTest extends TestCase
         self::assertCount(2, $results);
     }
 
-    public function testTextSearchUsesConfigOverFetchMultiplierByDefault(): void
+    public function testTextSearchUsesOverFetchMultiplierFromConstructor(): void
     {
         $db = new VectorDatabase(
-            hnswConfig: new HNSWConfig(M: 8, efConstruction: 50, efSearch: 20, overFetchMultiplier: 2),
+            hnswConfig: new HNSWConfig(M: 8, efConstruction: 50, efSearch: 20),
+            overFetchMultiplier: 2,
         );
 
         // Add docs where only 2 match, but they're not the top BM25 results without filtering

@@ -68,14 +68,6 @@ final class Config
      */
     public readonly bool $keepPrunedConnections;
 
-    /**
-     * Over-fetch multiplier when metadata filtering is active.
-     * Fetch overFetchMultiplier × k candidates, then filter to k.
-     * Higher value → better result completeness when many candidates are filtered out.
-     * Default: 5.
-     */
-    public readonly int $overFetchMultiplier;
-
     public function __construct(
         int $M = 16,
         ?int $M0 = null,
@@ -86,7 +78,6 @@ final class Config
         bool $useHeuristic = true,
         bool $extendCandidates = false,
         bool $keepPrunedConnections = true,
-        int $overFetchMultiplier = 5,
     ) {
         if ($M < 2) {
             throw new \InvalidArgumentException('M must be at least 2.');
@@ -96,10 +87,6 @@ final class Config
         if ($efConstruction < $resolvedM0) {
             throw new \InvalidArgumentException("efConstruction must be ≥ M0 ({$resolvedM0}).");
         }
-        if ($overFetchMultiplier < 1) {
-            throw new \InvalidArgumentException('overFetchMultiplier must be at least 1.');
-        }
-
         $this->M = $M;
         $this->M0 = $resolvedM0;
         $this->mL = $mL ?? (1.0 / log($M));
@@ -108,6 +95,5 @@ final class Config
         $this->useHeuristic = $useHeuristic;
         $this->extendCandidates = $extendCandidates;
         $this->keepPrunedConnections = $keepPrunedConnections;
-        $this->overFetchMultiplier = $overFetchMultiplier;
     }
 }
