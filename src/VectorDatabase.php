@@ -437,7 +437,7 @@ final class VectorDatabase
         $evaluator = new MetadataFilterEvaluator();
         $matchingDocs = [];
 
-        for ($nodeId = 0; $nodeId < $this->nextId; $nodeId++) {
+        foreach ($this->docIdToNodeId as $docId => $nodeId) {
             $doc = $this->loadDocument($nodeId);
             if ($evaluator->matches($doc, $filters)) {
                 $matchingDocs[$nodeId] = $doc;

@@ -1564,4 +1564,25 @@ final class VectorDatabaseTest extends TestCase
 
         self::assertCount(0, $results);
     }
+
+    public function testMetadataSearchExcludesDeletedDocuments(): void
+    {
+        $db = $this->makeDb();
+
+        $db->addDocument(new Document(id: 1, vector: [1.0, 0.0], metadata: ['status' => 'active']));
+        $db->addDocument(new Document(id: 2, vector: [0.9, 0.1], metadata: ['status' => 'active']));
+        $db->addDocument(new Document(id: 3, vector: [0.8, 0.2], metadata: ['status' => 'active']));
+
+        $db->deleteDocument(2);
+
+        $results = $db->metadataSearch(
+            filters: [MetadataFilter::eq('status', 'active')],
+        );
+
+        self::assertCount(2, $results);
+        $ids = array_map(fn (SearchResult $r) => $r->document->id, $results);
+        self::assertContains(1, $ids);
+        self::assertContains(3, $ids);
+        self::assertNotContains(2, $ids);
+    }
 }
