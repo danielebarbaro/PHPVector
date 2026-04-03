@@ -303,28 +303,18 @@ final class VectorDatabase
         $fetchK = $k * $overFetch;
 
         $raw = $this->hnswIndex->search($vector, $fetchK, $ef);
-        $evaluator = new MetadataFilterEvaluator();
 
-        $results = [];
-        $rank = 1;
-        foreach ($raw as $sr) {
+        // Hydrate stub documents from HNSW into full documents
+        $hydrated = array_map(function (SearchResult $sr): SearchResult {
             $nodeId = $this->docIdToNodeId[$sr->document->id];
-            $document = $this->loadDocument($nodeId);
+            return new SearchResult(
+                document: $this->loadDocument($nodeId),
+                score:    $sr->score,
+                rank:     $sr->rank,
+            );
+        }, $raw);
 
-            if ($evaluator->matches($document, $filters)) {
-                $results[] = new SearchResult(
-                    document: $document,
-                    score:    $sr->score,
-                    rank:     $rank++,
-                );
-
-                if (count($results) >= $k) {
-                    break;
-                }
-            }
-        }
-
-        return $results;
+        return $this->applyMetadataFilters($hydrated, $filters, $k);
     }
 
     /**
@@ -363,27 +353,9 @@ final class VectorDatabase
         }
 
         $topScores = array_slice($scores, 0, $fetchK, true);
-        $evaluator = new MetadataFilterEvaluator();
+        $candidates = $this->buildSearchResults($topScores);
 
-        $results = [];
-        $rank = 1;
-        foreach ($topScores as $nodeId => $score) {
-            $document = $this->loadDocument((int) $nodeId);
-
-            if ($evaluator->matches($document, $filters)) {
-                $results[] = new SearchResult(
-                    document: $document,
-                    score:    $score,
-                    rank:     $rank++,
-                );
-
-                if (count($results) >= $k) {
-                    break;
-                }
-            }
-        }
-
-        return $results;
+        return $this->applyMetadataFilters($candidates, $filters, $k);
     }
 
     /**
@@ -435,31 +407,12 @@ final class VectorDatabase
         $vectorResults = $this->hnswIndex->search($vector, $fetchK);
         $textScores    = $this->bm25Index->scoreAll($text);
 
-        // Fuse results (over-fetch to have enough candidates for filtering)
         $fusedResults = match ($mode) {
             HybridMode::RRF      => $this->fuseRRF($vectorResults, $textScores, $fusionK, $rrfK),
             HybridMode::Weighted => $this->fuseWeighted($vectorResults, $textScores, $fusionK, $vectorWeight, $textWeight),
         };
 
-        // Post-filter and return up to k results
-        $evaluator = new MetadataFilterEvaluator();
-        $results = [];
-        $rank = 1;
-        foreach ($fusedResults as $sr) {
-            if ($evaluator->matches($sr->document, $filters)) {
-                $results[] = new SearchResult(
-                    document: $sr->document,
-                    score:    $sr->score,
-                    rank:     $rank++,
-                );
-
-                if (count($results) >= $k) {
-                    break;
-                }
-            }
-        }
-
-        return $results;
+        return $this->applyMetadataFilters($fusedResults, $filters, $k);
     }
 
     /**
@@ -531,6 +484,38 @@ final class VectorDatabase
                 score:    1.0,
                 rank:     $rank++,
             );
+        }
+
+        return $results;
+    }
+
+    /**
+     * Filter pre-scored candidates by metadata and return up to $k results.
+     *
+     * @param SearchResult[] $candidates Pre-scored results ordered by relevance.
+     * @param array<MetadataFilter|array<MetadataFilter>> $filters Metadata filters (AND/OR groups).
+     * @param int $k Maximum results to return.
+     *
+     * @return SearchResult[]
+     */
+    private function applyMetadataFilters(array $candidates, array $filters, int $k): array
+    {
+        $evaluator = new MetadataFilterEvaluator();
+        $results = [];
+        $rank = 1;
+
+        foreach ($candidates as $sr) {
+            if ($evaluator->matches($sr->document, $filters)) {
+                $results[] = new SearchResult(
+                    document: $sr->document,
+                    score:    $sr->score,
+                    rank:     $rank++,
+                );
+
+                if (count($results) >= $k) {
+                    break;
+                }
+            }
         }
 
         return $results;
