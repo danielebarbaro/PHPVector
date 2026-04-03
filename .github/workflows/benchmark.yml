@@ -3,7 +3,7 @@ name: Performance Benchmark
 on:
   push:
     branches: [main]
-  pull_request:
+  pull_request_target:
     branches: [main]
 
 permissions:
@@ -25,13 +25,15 @@ jobs:
   # PR Benchmark: Compare PR against baseline from gh-pages
   # ─────────────────────────────────────────────────────────────────────────────
   benchmark-pr:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
     name: PR Performance Comparison
 
     steps:
       - name: Checkout PR branch
         uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -81,10 +83,11 @@ jobs:
 
       - name: Post benchmark comparison
         if: always()
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: peter-evans/create-or-update-comment@v4
         with:
-          header: benchmark
-          path: comparison.md
+          issue-number: ${{ github.event.pull_request.number }}
+          body-path: comparison.md
+          edit-mode: replace
 
       - name: Upload benchmark artifacts
         if: always()
